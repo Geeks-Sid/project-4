@@ -46,7 +46,7 @@ struct FileShard
  * @param fileShards The vector to populate with the resulting file shards.
  * @return True if sharding is successful, false otherwise.
  */
-inline bool shardFiles(const MapReduceSpec &mrSpec, std::vector<FileShard> &fileShards)
+inline bool shard_files(const MapReduceSpec &mrSpec, std::vector<FileShard> &fileShards)
 {
     std::cout << "Starting file sharding procedure..." << std::endl;
 

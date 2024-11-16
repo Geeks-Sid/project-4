@@ -64,7 +64,7 @@ inline std::vector<std::string> split_string(const std::string &str, char delimi
  * @return true if the configuration was successfully read and parsed.
  * @return false otherwise.
  */
-inline bool read_mapreduce_spec(const std::string &config_filename, MapReduceSpec &mr_spec)
+inline bool read_mr_spec_from_config_file(const std::string &config_filename, MapReduceSpec &mr_spec)
 {
     std::ifstream config_file(config_filename);
     if (!config_file.is_open())
@@ -162,7 +162,7 @@ inline bool read_mapreduce_spec(const std::string &config_filename, MapReduceSpe
  * @return true if the specification is valid.
  * @return false otherwise.
  */
-inline bool validate_mapreduce_spec(const MapReduceSpec &mr_spec)
+inline bool validate_mr_spec(const MapReduceSpec &mr_spec)
 {
     std::cout << "Configuration File: " << mr_spec.config_filename << std::endl;
     std::cout << "User ID: " << mr_spec.user_id << std::endl;

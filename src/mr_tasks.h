@@ -12,6 +12,9 @@
 #include <unordered_map>
 #include <stdexcept>
 
+// Include the full definition of BaseReducer
+#include "mr_task_factory.h"
+
 using std::cerr;
 using std::cout;
 using std::endl;
@@ -171,6 +174,15 @@ struct BaseReducerInternal
     void add_intermediate_file(const string &file_name)
     {
         intermediate_files_.emplace_back(file_name);
+    }
+
+    // Add this public method
+    void process_reduction(BaseReducer *reducer)
+    {
+        for (const auto &kv_pair : aggregated_pairs_)
+        {
+            reducer->reduce(kv_pair.first, kv_pair.second);
+        }
     }
 
 private:

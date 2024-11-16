@@ -166,7 +166,7 @@ bool Master::run()
                 worker.file_shard = assign_shard;
                 worker.status = MAP;
                 assignMapTask(worker);
-                cout << "[Master] Assigned shard " << worker.file_shard.shard_id << " to worker " << worker.ip_address << endl;
+                cout << "[Master] Assigned shard " << worker.file_shard.shardId << " to worker " << worker.ip_address << endl;
             }
         }
 
@@ -307,12 +307,12 @@ void Master::assignMapTask(WorkerInfo &worker)
     for (const auto &kv_pair : file_shard.pieces)
     {
         ShardPiece *piece = request.add_shard();
-        piece->set_file_name(kv_pair->filename);
-        piece->set_start_index(kv_pair->start_offset);
-        piece->set_end_index(kv_pair->end_offset);
+        piece->set_file_name(kv_pair.filename);
+        piece->set_start_index(kv_pair.startOffset);
+        piece->set_end_index(kv_pair.endOffset);
     }
 
-    string jobID = "map_" + std::to_string(worker.file_shard.shard_id);
+    string jobID = "map_" + std::to_string(worker.file_shard.shardId);
     request.set_job_id(jobID);
     request.set_num_reducers(m_spec.num_output_files);
     worker.job_id = jobID;

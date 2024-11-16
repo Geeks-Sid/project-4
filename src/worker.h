@@ -223,23 +223,19 @@ private:
             }
 
             // Set the final output file
-            reducer->impl_->final_file = reduce_request_.output_file();
-
+            reducer->impl_->set_final_file(reduce_request_.output_file());
             // Collect intermediate files
             for (const auto &input_file : reduce_request_.input_files())
             {
                 string combined_name = input_file + "_R" + reduce_request_.section();
-                reducer->impl_->interm_files.push_back(combined_name);
+                reducer->impl_->add_intermediate_file(combined_name);
             }
 
             // Group keys from intermediate files
             reducer->impl_->group_keys();
 
             // Reduce the grouped keys
-            for (const auto &key_value_pair : reducer->impl_->pairs)
-            {
-                reducer->reduce(key_value_pair.first, key_value_pair.second);
-            }
+            reducer->impl_->process_reduction(reducer.get());
 
             // Prepare the reply
             task_reply_.set_task_type("REDUCE");
