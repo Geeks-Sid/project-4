@@ -227,7 +227,7 @@ private:
             // Collect intermediate files
             for (const auto &input_file : reduce_request_.input_files())
             {
-                string combined_name = input_file + "_R" + reduce_request_.section();
+                string combined_name = input_file + "_R" + reduce_request_.section() + ".txt";
                 reducer->impl_->add_intermediate_file(combined_name);
             }
 

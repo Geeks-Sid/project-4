@@ -53,3 +53,12 @@ We are describing here only the files which you are supposed to work on. For the
   - Then start your main map reduce process: `./mrdemo config.ini`
   - Once the `./mrdemo` finishes, kill all the worker proccesses you started.
   - Check output directory to see if you have the correct results(obviously once you have done the proper implementation of your library).
+
+## Output Instructions
+  - Clear the files if any in the `output`/, `temp/` and/or `intermediate/` directory.
+  - Write the wordcounts in an output_directory
+  - Go to `bin` directory.
+  - Start all the worker processes (e.g. for 2 workers): `./mr_worker localhost:50051 & ./mr_worker localhost:50052;`
+  - Then start your main map reduce process: `./mrdemo config.ini`
+  - Once the `./mrdemo` finishes, kill all the worker proccesses you started.
+  - Check output directory to see if you have the correct results(obviously once you have done the proper implementation of your library).

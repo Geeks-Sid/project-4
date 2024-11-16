@@ -111,11 +111,18 @@ inline bool read_mr_spec_from_config_file(const std::string &config_filename, Ma
         }
         else if (key == "input_files")
         {
-            mr_spec.input_files = split_string(value, ',');
+            auto files = split_string(value, ',');
+            for (auto &file : files)
+            {
+                std::filesystem::path p(file);
+                file = std::filesystem::absolute(p).string();
+            }
+            mr_spec.input_files = files;
         }
         else if (key == "output_dir")
         {
-            mr_spec.output_dir = value;
+            std::filesystem::path p(value);
+            mr_spec.output_dir = std::filesystem::absolute(p).string();
         }
         else if (key == "n_output_files")
         {

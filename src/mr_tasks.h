@@ -11,6 +11,7 @@
 #include <optional>
 #include <unordered_map>
 #include <stdexcept>
+#include <filesystem>
 
 // Include the full definition of BaseReducer
 #include "mr_task_factory.h"
@@ -204,6 +205,10 @@ inline void BaseReducerInternal::emit(const string &key, const string &value)
         throw std::runtime_error("Final output file not set.");
     }
 
+    // Ensure the output directory exists
+    std::filesystem::path output_path(final_file_);
+    std::filesystem::create_directories(output_path.parent_path());
+
     ofstream fout(final_file_, std::ios::app);
     if (!fout.is_open())
     {
@@ -211,7 +216,7 @@ inline void BaseReducerInternal::emit(const string &key, const string &value)
         throw std::runtime_error("Failed to open final output file.");
     }
 
-    fout << key << ", " << value << '\n';
+    fout << key << " " << value << '\n';
     fout.close();
 
     cout << "[BaseReducerInternal] Emitted key-value pair (" << key << ", " << value << ") to " << final_file_ << endl;
@@ -240,16 +245,20 @@ inline void BaseReducerInternal::group_keys()
             if (line.empty())
                 continue;
 
-            istringstream line_stream(line);
-            string key;
-            if (!std::getline(line_stream, key, ':'))
+            size_t pos = line.find(':');
+            if (pos == string::npos)
             {
                 cerr << "[BaseReducerInternal] Warning: Malformed line in file " << file_name << ": " << line << endl;
                 continue;
             }
 
+            string key = line.substr(0, pos);
+            string values_str = line.substr(pos + 1);
+
+            // Create a new stringstream to parse the values
+            istringstream values_stream(values_str);
             string value;
-            while (std::getline(line_stream, value, ','))
+            while (std::getline(values_stream, value, ','))
             {
                 aggregated_pairs_[key].emplace_back(value);
             }

@@ -5,6 +5,7 @@
 #include <grpc++/grpc++.h>
 #include <mr_task_factory.h>
 #include <unordered_set>
+#include <filesystem>
 
 #include "file_shard.h"
 #include "mapreduce_spec.h"
@@ -117,6 +118,13 @@ bool Master::run()
     int num_shards_completed = 0;
     const int num_map_tasks_to_do = shards.size();
     const int kRunningTime = 200;
+
+    // Ensure output directory exists
+    std::filesystem::path output_dir(m_spec.output_dir);
+    if (!std::filesystem::exists(output_dir))
+    {
+        std::filesystem::create_directories(output_dir);
+    }
 
     // Loop until all mapping tasks are completed
     while (!map_complete_flag)
