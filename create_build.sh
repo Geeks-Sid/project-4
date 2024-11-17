@@ -24,7 +24,7 @@ cp -r ../test/input/ bin/
 
 # Step 4: Start worker processes
 echo "Starting worker processes..."
-WORKER_PORTS=("50051" "50052" "50053" "50054" "50055" "50056")
+IFS=',' read -r -a WORKER_PORTS <<< "$(grep 'worker_ipaddr_ports' ../test/config.ini | cut -d '=' -f 2 | sed 's/localhost://g')"
 WORKER_PIDS=()
 
 # Change to the bin directory
@@ -40,14 +40,7 @@ done
 echo "Running the main MapReduce process..."
 ./mrdemo config.ini
 
-# Step 6: Kill all worker processes
-echo "Cleaning up worker processes..."
-for PID in "${WORKER_PIDS[@]}"; do
-    kill "$PID"
-    echo "Killed worker process with PID ${PID}"
-done
-
-# Step 7: Check the output directory
+# Step 6: Check the output directory
 echo "Checking the output directory..."
 OUTPUT_DIR="output"
 if [ -d "$OUTPUT_DIR" ]; then
