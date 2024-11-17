@@ -1,272 +1,137 @@
 #pragma once
 
-#include <map>
-#include <vector>
-#include <string>
 #include <fstream>
-#include <sstream>
 #include <iostream>
-#include <functional>
-#include <memory>
-#include <optional>
-#include <unordered_map>
-#include <stdexcept>
-#include <filesystem>
+#include <string>
+#include <vector>
 
-// Include the full definition of BaseReducer
-#include "mr_task_factory.h"
+#define DEBUG 0
+#define devnull "/dev/null"
+#define MAX_KV_PAIR_SIZE 4096
+#define DELIMITER '|'
 
-using std::cerr;
-using std::cout;
-using std::endl;
-using std::hash;
-using std::ifstream;
-using std::istringstream;
-using std::map;
-using std::ofstream;
-using std::out_of_range;
-using std::string;
-using std::vector;
+/* CS6210_TASK Implement this data structure as per your implementation.
+                You will need this when your worker is running the map task*/
 
-/**
- * @brief Internal implementation of the BaseMapper.
- *
- * Handles the emission and storage of key-value pairs during the map phase.
- */
 struct BaseMapperInternal
 {
-    BaseMapperInternal() = default;
 
+    /* DON'T change this function's signature */
+    BaseMapperInternal();
+
+    /* DON'T change this function's signature */
+    void emit(const std::string &key, const std::string &val);
+
+    /* NOW you can add below, data members and member functions as per the need of
+     * your implementation*/
     /**
-     * @brief Emits a key-value pair.
-     *
-     * Stores the key-value pair in an internal map. If the key does not exist, it initializes a new vector.
-     *
-     * @param key The key to emit.
-     * @param value The value associated with the key.
+     * Storage vector for key value pairs
      */
-    void emit(const string &key, const string &value);
+    std::vector<std::pair<std::string, std::pair<std::string, std::string>>> kv_pair_vector;
 
-    /**
-     * @brief Writes the emitted key-value pairs to intermediate files.
-     *
-     * Distributes the key-value pairs across multiple output files based on a hash of the key.
-     *
-     * @param base_name The base name for the output files.
-     * @param num_output_files The number of output files to create.
-     */
-    void write_data(const string &base_name, int num_output_files);
+    std::vector<std::string> intermediate_file_list;
 
-private:
-    // Stores the intermediate key-value pairs.
-    map<string, vector<string>> key_value_pairs_;
+    std::string internal_file_mapping(std::string key);
 
-    // Names of the intermediate files.
-    vector<string> intermediate_file_names_;
+    void final_flush();
 };
 
-inline void BaseMapperInternal::emit(const string &key, const string &value)
+/* CS6210_TASK Implement this function */
+/**
+ * Constructor not required as no private variable require initialization
+ */
+inline BaseMapperInternal::BaseMapperInternal()
 {
-    key_value_pairs_[key].emplace_back(value);
-}
-
-inline void BaseMapperInternal::write_data(const string &base_name, int num_output_files)
-{
-    if (num_output_files <= 0)
-    {
-        throw std::invalid_argument("Number of output files must be positive.");
-    }
-
-    // Initialize intermediate file names
-    intermediate_file_names_.reserve(num_output_files);
-    for (int i = 0; i < num_output_files; ++i)
-    {
-        intermediate_file_names_.emplace_back(base_name + "_R" + std::to_string(i) + ".txt");
-    }
-
-    hash<string> hash_fn;
-
-    // Open all intermediate files once to avoid frequent opening and closing
-    vector<ofstream> output_streams;
-    output_streams.reserve(num_output_files);
-    for (const auto &file_name : intermediate_file_names_)
-    {
-        output_streams.emplace_back(file_name, std::ios::app);
-        if (!output_streams.back().is_open())
-        {
-            cerr << "[BaseMapperInternal] Error: Unable to open file " << file_name << " for writing." << endl;
-            throw std::runtime_error("Failed to open intermediate file.");
-        }
-    }
-
-    // Distribute key-value pairs across the intermediate files
-    for (const auto &[key, values] : key_value_pairs_)
-    {
-        size_t file_index = hash_fn(key) % num_output_files;
-        auto &ofs = output_streams[file_index];
-        if (!ofs)
-        {
-            cerr << "[BaseMapperInternal] Error: Output stream for file " << intermediate_file_names_[file_index] << " is not valid." << endl;
-            continue;
-        }
-
-        ofs << key;
-        if (!values.empty())
-        {
-            ofs << ':' << values[0];
-            for (size_t i = 1; i < values.size(); ++i)
-            {
-                ofs << ',' << values[i];
-            }
-        }
-        ofs << '\n';
-    }
-
-    // Close all output streams
-    for (auto &ofs : output_streams)
-    {
-        ofs.close();
-    }
-
-    cout << "[BaseMapperInternal] Successfully wrote data to " << num_output_files << " intermediate files." << endl;
 }
 
 /**
- * @brief Internal implementation of the BaseReducer.
- *
- * Handles the aggregation and emission of key-value pairs during the reduce phase.
+ * Find intermediate file based on given key by creating hash of key and taking modulo
+ * Taking hash allows normal distribution of keys for unique keys.
+ * @param key
+ * @return file location for given key.
  */
-struct BaseReducerInternal
+inline std::string BaseMapperInternal::internal_file_mapping(std::string key)
 {
-    BaseReducerInternal() = default;
-
-    /**
-     * @brief Emits a key-value pair to the final output file.
-     *
-     * Appends the key-value pair to the designated final output file.
-     *
-     * @param key The key to emit.
-     * @param value The value associated with the key.
-     */
-    void emit(const string &key, const string &value);
-
-    /**
-     * @brief Groups keys from intermediate files.
-     *
-     * Reads all intermediate files, aggregates values by keys, and stores them internally.
-     */
-    void group_keys();
-
-    /**
-     * @brief Sets the name of the final output file.
-     *
-     * @param file_name The name of the final output file.
-     */
-    void set_final_file(const string &file_name)
-    {
-        final_file_ = file_name;
-    }
-
-    /**
-     * @brief Adds an intermediate file to be processed.
-     *
-     * @param file_name The name of the intermediate file.
-     */
-    void add_intermediate_file(const string &file_name)
-    {
-        intermediate_files_.emplace_back(file_name);
-    }
-
-    // Add this public method
-    void process_reduction(BaseReducer *reducer)
-    {
-        for (const auto &kv_pair : aggregated_pairs_)
-        {
-            reducer->reduce(kv_pair.first, kv_pair.second);
-        }
-    }
-
-private:
-    // Name of the final output file.
-    string final_file_;
-
-    // List of intermediate files to process.
-    vector<string> intermediate_files_;
-
-    // Aggregated key-value pairs.
-    map<string, vector<string>> aggregated_pairs_;
-};
-
-inline void BaseReducerInternal::emit(const string &key, const string &value)
-{
-    if (final_file_.empty())
-    {
-        cerr << "[BaseReducerInternal] Error: Final output file is not set." << endl;
-        throw std::runtime_error("Final output file not set.");
-    }
-
-    // Ensure the output directory exists
-    std::filesystem::path output_path(final_file_);
-    std::filesystem::create_directories(output_path.parent_path());
-
-    ofstream fout(final_file_, std::ios::app);
-    if (!fout.is_open())
-    {
-        cerr << "[BaseReducerInternal] Error: Unable to open final output file " << final_file_ << " for writing." << endl;
-        throw std::runtime_error("Failed to open final output file.");
-    }
-
-    fout << key << " " << value << '\n';
-    fout.close();
-
-    cout << "[BaseReducerInternal] Emitted key-value pair (" << key << ", " << value << ") to " << final_file_ << endl;
+    std::hash<std::string> h;
+    if (BaseMapperInternal::intermediate_file_list.empty())
+        return devnull;
+    auto file_location = h(key) % BaseMapperInternal::intermediate_file_list.size();
+    return BaseMapperInternal::intermediate_file_list[file_location];
 }
 
-inline void BaseReducerInternal::group_keys()
+/**
+ * Flush Key Value pair to required intermediate file. We use Caching of MAX_KV_PAIR_SIZE (2048 )
+ * @param key
+ * @param val
+ */
+inline void BaseMapperInternal::emit(const std::string &key, const std::string &val)
 {
-    if (intermediate_files_.empty())
+#if DEBUG > 1
+//    std::cout << BaseMapperInternal::kv_pair_vector.size() << "Dummy emit by BaseMapperInternal: " << key << DELIMITER
+//    << val << std::endl;
+#endif
+    if (BaseMapperInternal::kv_pair_vector.size() > MAX_KV_PAIR_SIZE)
     {
-        cerr << "[BaseReducerInternal] Warning: No intermediate files to process." << endl;
-        return;
+        for (const auto &a : BaseMapperInternal::kv_pair_vector)
+        {
+            std::ofstream f(a.first, std::ofstream::out | std::ofstream::app);
+            f << a.second.first << DELIMITER << a.second.second << std::endl;
+        }
+        BaseMapperInternal::kv_pair_vector.clear();
     }
-
-    for (const auto &file_name : intermediate_files_)
+    BaseMapperInternal::kv_pair_vector.push_back({BaseMapperInternal::internal_file_mapping(key), {key, val}});
+}
+/**
+ * Final flush to intermediate file for given map operation.
+ */
+inline void BaseMapperInternal::final_flush()
+{
+    for (const auto &a : BaseMapperInternal::kv_pair_vector)
     {
-        ifstream infile(file_name);
-        if (!infile.is_open())
-        {
-            cerr << "[BaseReducerInternal] Error: Unable to open intermediate file " << file_name << " for reading." << endl;
-            continue;
-        }
-
-        string line;
-        while (std::getline(infile, line))
-        {
-            if (line.empty())
-                continue;
-
-            size_t pos = line.find(':');
-            if (pos == string::npos)
-            {
-                cerr << "[BaseReducerInternal] Warning: Malformed line in file " << file_name << ": " << line << endl;
-                continue;
-            }
-
-            string key = line.substr(0, pos);
-            string values_str = line.substr(pos + 1);
-
-            // Create a new stringstream to parse the values
-            istringstream values_stream(values_str);
-            string value;
-            while (std::getline(values_stream, value, ','))
-            {
-                aggregated_pairs_[key].emplace_back(value);
-            }
-        }
-
-        infile.close();
-        cout << "[BaseReducerInternal] Processed intermediate file: " << file_name << endl;
+        std::ofstream f(a.first, std::ofstream::out | std::ofstream::app);
+        f << a.second.first << DELIMITER << a.second.second << std::endl;
+        f.close();
     }
+    BaseMapperInternal::kv_pair_vector.clear();
+}
 
-    cout << "[BaseReducerInternal] Successfully grouped keys from all intermediate files." << endl;
+/*-----------------------------------------------------------------------------------------------*/
+
+/* CS6210_TASK Implement this data structureas per your implementation.
+                You will need this when your worker is running the reduce task*/
+struct BaseReducerInternal
+{
+
+    /* DON'T change this function's signature */
+    BaseReducerInternal();
+
+    /* DON'T change this function's signature */
+    void emit(const std::string &key, const std::string &val);
+
+    /* NOW you can add below, data members and member functions as per the need of
+     * your implementation*/
+    std::string file_name;
+};
+
+/**
+ * Constructor not required as no private variable require initialization
+ */
+inline BaseReducerInternal::BaseReducerInternal()
+{
+}
+
+/* CS6210_TASK Implement this function */
+/**
+ * Emit given key value pair to output file this->file_name.
+ * @param key
+ * @param val
+ */
+inline void BaseReducerInternal::emit(const std::string &key, const std::string &val)
+{
+#if DEBUG > 1
+    std::cout << "Dummy emit by BaseReducerInternal: " << key << ", " << val << std::endl;
+#endif
+    std::ofstream f(file_name, std::ofstream::out | std::ofstream::app);
+    f << key << " " << val << std::endl;
+    f.close();
 }

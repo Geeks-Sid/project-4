@@ -1,214 +1,163 @@
-
 #pragma once
 
-#include <iostream>
+#include <cstring>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <iterator>
+#if __cplusplus >= 201703L
+#if __GNUC__ > 7 || __APPLE_CC__ > 7
 #include <filesystem>
-
-/**
- * @brief Structure to store MapReduce specifications from the configuration file.
- */
+#elif __GNUC__ == 7 || __APPLE_CC__ == 7
+#include <experimental/filesystem>
+#endif
+#if __GNUC__ > 7 || __APPLE_CC__ > 7
+namespace fs = std::filesystem;
+#elif __GNUC__ == 7 || __APPLE_CC__ == 7
+namespace fs = std::experimental::filesystem;
+#endif
+#endif
+/* CS6210_TASK: Create your data structure here for storing spec from the config file */
 struct MapReduceSpec
 {
-    std::vector<std::string> worker_ipaddr_ports; ///< Workers' IP addresses and ports
-    std::vector<std::string> input_files;         ///< List of input files
-    std::string config_filename;                  ///< Path to the config file
-    std::string user_id;                          ///< User identifier
-    std::string output_dir;                       ///< Output directory path
-    int num_workers = 0;                          ///< Number of workers
-    int num_output_files = 0;                     ///< Number of output files to be created
-    int map_kilobytes = 0;                        ///< Kilobytes per shard
+    unsigned int worker_count = 0;
+    unsigned int output_files = 0;
+    unsigned int map_kb = 0;
+    std::string user;
+    std::string output_directory;
+    std::vector<std::string> worker_endpoints;
+    std::vector<std::string> input_files;
 };
 
 /**
- * @brief Splits a string by a given delimiter and appends the tokens to a vector.
- *
- * @param str The string to split.
- * @param delimiter The character delimiter to split by.
- * @param tokens The vector to append the split tokens.
+ * Splits string with given delimiter del
+ * @param s --> raw string
+ * @param del --> delimiter
+ * @return returns vector with parsed strings.
  */
-inline void split_string(const std::string &str, char delimiter, std::vector<std::string> &tokens)
+inline std::vector<std::string> splitString(const std::string &s, char del)
 {
-    std::stringstream ss(str);
-    std::string token;
-    while (std::getline(ss, token, delimiter))
+    std::vector<std::string> arr{};
+    std::stringstream ss(s);
+    std::string temp;
+    while (std::getline(ss, temp, del))
     {
-        tokens.emplace_back(token);
+        arr.push_back(temp);
     }
+    return arr;
 }
 
 /**
- * @brief Splits a string by a given delimiter and returns the tokens as a vector.
- *
- * @param str The string to split.
- * @param delimiter The character delimiter to split by.
- * @return std::vector<std::string> The vector containing split tokens.
- */
-inline std::vector<std::string> split_string(const std::string &str, char delimiter)
-{
-    std::vector<std::string> tokens;
-    split_string(str, delimiter, tokens);
-    return tokens;
-}
-
-/**
- * @brief Populates a MapReduceSpec structure with specifications from a config file.
- *
- * @param config_filename The path to the config file.
- * @param mr_spec The MapReduceSpec structure to populate.
- * @return true if the configuration was successfully read and parsed.
- * @return false otherwise.
+ * Populate MapReduceSpec data structure with the specification from the config file
+ * @param config_filename
+ * @param mr_spec
+ * @return true or false based on success
  */
 inline bool read_mr_spec_from_config_file(const std::string &config_filename, MapReduceSpec &mr_spec)
 {
     std::ifstream config_file(config_filename);
-    if (!config_file.is_open())
+    std::string config_line;
+    if (!config_file.good())
     {
-        std::cerr << "Error: Unable to open config file: " << config_filename << std::endl;
+        std::cerr << "Error opening fie : " << config_filename << " Error No" << std::strerror(errno) << std::endl;
         return false;
     }
-
-    mr_spec.config_filename = config_filename;
-    std::string line;
-    while (std::getline(config_file, line))
+    while (std::getline(config_file, config_line))
     {
-        // Skip empty lines or comments
-        if (line.empty() || line[0] == '#')
+        std::string key, value;
+        key = config_line.substr(0, config_line.find_first_of('='));
+        value = config_line.substr(config_line.find_first_of('=') + 1, config_line.length());
+        if (value.empty() || key.empty())
         {
-            continue;
+            std::cerr << key << " is empty or value " << value << " is empty , please check again" << std::endl;
+            return false;
         }
-
-        auto key_value = split_string(line, '=');
-        if (key_value.size() != 2)
-        {
-            std::cerr << "Warning: Invalid line in config file: " << line << std::endl;
-            continue;
-        }
-
-        const std::string &key = key_value[0];
-        const std::string &value = key_value[1];
-
         if (key == "n_workers")
         {
-            try
-            {
-                mr_spec.num_workers = std::stoi(value);
-            }
-            catch (const std::invalid_argument &)
-            {
-                std::cerr << "Error: Invalid number for n_workers: " << value << std::endl;
-                return false;
-            }
+            mr_spec.worker_count = std::stoi(value);
+            continue;
         }
-        else if (key == "worker_ipaddr_ports")
+        if (key == "worker_ipaddr_ports")
         {
-            mr_spec.worker_ipaddr_ports = split_string(value, ',');
+            mr_spec.worker_endpoints = splitString(value, ',');
+            continue;
         }
-        else if (key == "input_files")
+        if (key == "input_files")
         {
-            auto files = split_string(value, ',');
-            for (auto &file : files)
-            {
-                std::filesystem::path p(file);
-                file = std::filesystem::absolute(p).string();
-            }
-            mr_spec.input_files = files;
+            mr_spec.input_files = splitString(value, ',');
+
+            continue;
         }
-        else if (key == "output_dir")
+        if (key == "output_dir")
         {
-            std::filesystem::path p(value);
-            mr_spec.output_dir = std::filesystem::absolute(p).string();
+            mr_spec.output_directory = value;
+            continue;
         }
-        else if (key == "n_output_files")
+        if (key == "n_output_files")
         {
-            try
-            {
-                mr_spec.num_output_files = std::stoi(value);
-            }
-            catch (const std::invalid_argument &)
-            {
-                std::cerr << "Error: Invalid number for n_output_files: " << value << std::endl;
-                return false;
-            }
+            mr_spec.output_files = std::stoi(value);
+            continue;
         }
-        else if (key == "map_kilobytes")
+        if (key == "map_kilobytes")
         {
-            try
-            {
-                mr_spec.map_kilobytes = std::stoi(value);
-            }
-            catch (const std::invalid_argument &)
-            {
-                std::cerr << "Error: Invalid number for map_kilobytes: " << value << std::endl;
-                return false;
-            }
+            mr_spec.map_kb = std::stoi(value);
+            continue;
         }
-        else if (key == "user_id")
+        if (key == "user_id")
         {
-            mr_spec.user_id = value;
-        }
-        else
-        {
-            std::cerr << "Warning: Unknown key in config file: " << key << std::endl;
+            mr_spec.user = value;
+            continue;
         }
     }
 
-    config_file.close();
     return true;
 }
 
 /**
- * @brief Validates the MapReduceSpec configuration.
- *
- * @param mr_spec The MapReduceSpec structure to validate.
- * @return true if the specification is valid.
- * @return false otherwise.
+ * validate  the  specification  read  from  the  config file
+ * @param mr_spec
+ * @return true or false based on validation criteria.
  */
 inline bool validate_mr_spec(const MapReduceSpec &mr_spec)
 {
-    std::cout << "Configuration File: " << mr_spec.config_filename << std::endl;
-    std::cout << "User ID: " << mr_spec.user_id << std::endl;
-    std::cout << "Number of Workers: " << mr_spec.num_workers << std::endl;
 
-    std::cout << "Worker IP Addresses and Ports:" << std::endl;
-    for (const auto &ip_port : mr_spec.worker_ipaddr_ports)
+    if (mr_spec.worker_endpoints.size() != mr_spec.worker_count)
     {
-        std::cout << "\t" << ip_port << std::endl;
-    }
-
-    std::cout << "Input Files:" << std::endl;
-    for (const auto &input_file : mr_spec.input_files)
-    {
-        std::cout << "\t" << input_file << std::endl;
-    }
-
-    std::cout << "Output Directory: " << mr_spec.output_dir << std::endl;
-    std::cout << "Number of Output Files: " << mr_spec.num_output_files << std::endl;
-    std::cout << "Kilobytes per Shard: " << mr_spec.map_kilobytes << " KB" << std::endl;
-
-    // Validate number of workers matches number of IP addresses
-    if (mr_spec.num_workers != static_cast<int>(mr_spec.worker_ipaddr_ports.size()))
-    {
-        std::cerr << "Error: Number of workers (" << mr_spec.num_workers
-                  << ") does not match number of worker IP addresses provided ("
-                  << mr_spec.worker_ipaddr_ports.size() << ")." << std::endl;
+        std::cerr << "Invalid Count of Workers : " << mr_spec.worker_endpoints.size() << "config - worker_count"
+                  << mr_spec.worker_count << std::endl;
         return false;
     }
 
-    // Validate input files exist
-    for (const auto &input_file : mr_spec.input_files)
+#if __cplusplus >= 201703L
+    if (!fs::is_directory(mr_spec.output_directory))
     {
-        if (!std::filesystem::exists(input_file))
+        if (fs::is_regular_file(mr_spec.output_directory))
         {
-            std::cerr << "Error: Input file does not exist: " << input_file << std::endl;
+            std::cerr << mr_spec.output_directory << " is file not directory please provide correct path." << std::endl;
+            return false;
+        }
+        else
+        {
+            try
+            {
+                fs::create_directory(mr_spec.output_directory);
+            }
+            catch (fs::filesystem_error &e)
+            {
+                std::cout << e.what() << std::endl;
+            }
+        }
+    }
+#endif
+    for (const auto &f : mr_spec.input_files)
+    {
+        std::ifstream temp_stream(f);
+        if (!temp_stream.good())
+        {
+            std::cerr << "Error opening fie : " << f << " Error No: " << std::strerror(errno) << std::endl;
             return false;
         }
     }
-
     return true;
 }

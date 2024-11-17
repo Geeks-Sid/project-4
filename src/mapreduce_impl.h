@@ -1,8 +1,7 @@
 #pragma once
 
-#include "mapreduce_spec.h"
 #include "file_shard.h"
-
+#include "mapreduce_spec.h"
 class MapReduceImpl
 {
 

@@ -1,145 +1,122 @@
-/*
- * CS 6210 - Project 4
- * Haoran Li
- * GTid: 903377792
- * Date: Nov.28, 2018
- */
-
 #pragma once
 
-#include <cmath>
+#include <sys/stat.h>
 #include <vector>
-#include <string>
-#include <fstream>
-#include <iostream>
 
 #include "mapreduce_spec.h"
-
+#define KB 1024
+#define TEMP_DIR "intermediate"
 /**
- * Represents a segment of a file with start and end offsets.
+ * Boiler plate function for retrieving file size
+ * @param path
+ * @return file size usually with 64bit value
  */
-struct FileOffset
+inline std::uintmax_t get_filesize(std::string path)
+{
+#if __cplusplus >= 201703L
+    return fs::file_size(path);
+#else
+    struct stat stat_buf;
+    int rc = stat(path.c_str(), &stat_buf);
+    return rc == 0 ? stat_buf.st_size : -1;
+#endif
+}
+
+struct splitFile
 {
     std::string filename;
-    std::size_t startOffset; // Inclusive start offset within the file
-    std::size_t endOffset;   // Exclusive end offset within the file
+    std::pair<std::uintmax_t, std::uintmax_t> offsets; // Start , End
 };
 
-/**
- * Represents a shard containing multiple file offsets.
- */
+/* CS6210_TASK: Create your own data structure here, where you can hold information about file splits,
+     that your master would use for its own bookkeeping and to convey the tasks to the workers for mapping */
 struct FileShard
 {
-    int shardId;
-    std::vector<FileOffset> pieces;
+    int shard_id = -1;
+    std::vector<splitFile> split_file_list;
 };
 
 /**
- * Splits input files into shards based on the MapReduce specification.
- *
- * This function creates file shards by dividing the input files into
- * chunks of approximately 'map_kilobytes' kilobytes. It ensures that
- * shards do not split words by adjusting shard boundaries to the next
- * newline character.
- *
- * @param mrSpec The MapReduce specification containing input files and shard size.
- * @param fileShards The vector to populate with the resulting file shards.
- * @return True if sharding is successful, false otherwise.
+ * finds nearest \n location in given shard file. usually its after the optimal size.
+ * @param fileName
+ * @param offset
+ * @param optimal_shard_size
+ * @return nearest file Offset for `\n` from given file offset. usually used as offset + return_value
  */
-inline bool shard_files(const MapReduceSpec &mrSpec, std::vector<FileShard> &fileShards)
+inline std::uintmax_t approx_split(
+    const std::basic_string<char> fileName,
+    uintmax_t offset,
+    uintmax_t optimal_shard_size)
 {
-    std::cout << "Starting file sharding procedure..." << std::endl;
-
-    const auto &inputFilenames = mrSpec.input_files;
-    const std::size_t shardSizeBytes = mrSpec.map_kilobytes * 1000;
-
-    std::size_t totalSize = 0;
-    int currentShardId = 0;
-    FileShard currentShard;
-    currentShard.shardId = currentShardId;
-    std::size_t currentShardBytes = 0;
-
-    for (const auto &filename : inputFilenames)
+    std::uintmax_t approx_size;
+    std::ifstream fs(fileName);
+    if (!fs.good())
     {
-        std::ifstream fileStream(filename, std::ifstream::binary | std::ifstream::ate);
-        if (!fileStream.is_open())
+        std::cerr << "Error Opening file: " << fileName << std::endl;
+        return 0;
+    }
+    fs.seekg(offset + optimal_shard_size);
+    std::string temp_str;
+    std::getline(fs, temp_str);
+    approx_size = optimal_shard_size + temp_str.length() + 1;
+    return approx_size;
+}
+
+/**
+ * Create file shards from the list of input files, map_kilobytes * etc. using mr_spec you populated
+ * @param mr_spec
+ * @param fileShards
+ * @return true if succeeded.
+ */
+inline bool shard_files(const MapReduceSpec &mr_spec, std::vector<FileShard> &fileShards)
+{
+    std::uintmax_t optimal_shard_size = mr_spec.map_kb * KB;
+    std::intmax_t rem_shard_size = optimal_shard_size;
+    FileShard current_shard;
+    current_shard.shard_id = fileShards.size();
+    for (const auto &f : mr_spec.input_files)
+    {
+        std::uintmax_t file_size, rem_file_size;
+        file_size = rem_file_size = get_filesize(f);
+        std::uintmax_t offset = 0;
+        splitFile current_split_file;
+        while (rem_file_size > 0)
         {
-            std::cerr << "Error opening file: " << filename << std::endl;
-            return false;
-        }
-
-        std::size_t fileSize = static_cast<std::size_t>(fileStream.tellg());
-        fileStream.seekg(0, std::ifstream::beg);
-        totalSize += fileSize;
-
-        std::size_t currentOffset = 0;
-
-        while (currentOffset < fileSize)
-        {
-            std::size_t bytesLeftInShard = shardSizeBytes - currentShardBytes;
-            std::size_t bytesRemainingInFile = fileSize - currentOffset;
-            std::size_t bytesToRead = std::min(bytesLeftInShard, bytesRemainingInFile);
-
-            std::size_t tentativeEndOffset = currentOffset + bytesToRead;
-
-            // Adjust to the next newline to avoid splitting a word, if not at the end of file
-            if (tentativeEndOffset < fileSize)
+            current_split_file.filename = f;
+            if (rem_shard_size >= rem_file_size)
             {
-                fileStream.seekg(tentativeEndOffset);
-                char ch;
-                while (fileStream.get(ch))
-                {
-                    tentativeEndOffset++;
-                    if (ch == '\n')
-                    {
-                        break;
-                    }
-                }
-
-                // If no newline found, set end offset to file size
-                if (tentativeEndOffset > fileSize)
-                {
-                    tentativeEndOffset = fileSize;
-                }
+                current_split_file.offsets = {offset, offset + rem_file_size};
+                rem_shard_size -= rem_file_size;
+                rem_file_size = 0;
+                current_shard.split_file_list.push_back(current_split_file);
             }
             else
             {
-                tentativeEndOffset = fileSize;
+                std::uintmax_t nearest_size;
+                nearest_size = offset + optimal_shard_size > file_size ? file_size - offset
+                                                                       : approx_split(f, offset, rem_shard_size);
+                current_split_file.offsets = {offset, offset + nearest_size};
+                if (offset > offset + nearest_size)
+                {
+                    perror("SOMETHING WENT WRONG......");
+                    exit(1);
+                }
+                current_shard.split_file_list.push_back(current_split_file);
+                current_split_file = splitFile();
+                rem_shard_size -= nearest_size;
+                rem_file_size -= nearest_size;
+                offset += nearest_size;
             }
-
-            FileOffset shardPiece;
-            shardPiece.filename = filename;
-            shardPiece.startOffset = currentOffset;
-            shardPiece.endOffset = tentativeEndOffset;
-
-            currentShard.pieces.emplace_back(shardPiece);
-            std::size_t bytesAdded = shardPiece.endOffset - shardPiece.startOffset;
-            currentShardBytes += bytesAdded;
-            currentOffset = shardPiece.endOffset;
-
-            // If current shard reached or exceeded the desired size, finalize it
-            if (currentShardBytes >= shardSizeBytes)
+            if (rem_shard_size <= 0)
             {
-                fileShards.emplace_back(std::move(currentShard));
-                currentShardId++;
-                currentShard = FileShard{currentShardId, {}};
-                currentShardBytes = 0;
+                fileShards.push_back(current_shard);
+                current_shard = FileShard();
+                current_shard.shard_id = fileShards.size();
+                rem_shard_size = optimal_shard_size;
             }
         }
-
-        fileStream.close();
     }
-
-    // Add the last shard if it has any pieces
-    if (!currentShard.pieces.empty())
-    {
-        fileShards.emplace_back(std::move(currentShard));
-    }
-
-    std::size_t calculatedShardCount = static_cast<std::size_t>(std::ceil(static_cast<double>(totalSize) / shardSizeBytes));
-    std::cout << "Total files size: " << totalSize << " bytes, Calculated number of shards: "
-              << calculatedShardCount << std::endl;
-    std::cout << "Actual number of shards created: " << fileShards.size() << std::endl;
-
+    if (current_shard.shard_id > -1)
+        fileShards.push_back(current_shard);
     return true;
 }

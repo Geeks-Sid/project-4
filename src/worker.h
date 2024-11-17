@@ -1,347 +1,453 @@
 #pragma once
 
-#include <deque>
-#include <fstream>
-#include <memory>
-#include <string>
-#include <iostream>
-
 #include <grpcpp/grpcpp.h>
+#include <mr_task_factory.h>
+#include <thread>
+#include <utility>
 
-#include "mr_task_factory.h"
-#include "mr_tasks.h"
+#include "file_shard.h"
 #include "masterworker.grpc.pb.h"
+#include "mr_tasks.h"
+#if __cplusplus >= 201703L
 
-using grpc::Server;
-using grpc::ServerAsyncResponseWriter;
-using grpc::ServerBuilder;
-using grpc::ServerCompletionQueue;
-using grpc::ServerContext;
-using grpc::Status;
+#if __GNUC__ > 7 || __APPLE_CC__ > 7
+#include <filesystem>
+#elif __GNUC__ == 7 || __APPLE_CC__ == 7
+#include <experimental/filesystem>
+#endif
+#endif
+extern std::shared_ptr<BaseMapper> get_mapper_from_task_factory(const std::string &user_id);
 
-using masterworker::AssignTask;
-using masterworker::MapRequest;
-using masterworker::PingRequest;
-using masterworker::ReduceRequest;
-using masterworker::ShardPiece;
-using masterworker::TaskReply;
-
-using std::cerr;
-using std::cout;
-using std::endl;
-using std::ifstream;
-using std::shared_ptr;
-using std::string;
-using std::unique_ptr;
-
-// External functions to get mapper and reducer from task factory
-extern shared_ptr<BaseMapper> get_mapper_from_task_factory(const string &user_id);
-extern shared_ptr<BaseReducer> get_reducer_from_task_factory(const string &user_id);
-
-/* CS6210_TASK: Handle all the tasks a Worker is supposed to do.
-   This is a big task for this project, will test your understanding of map reduce */
-class Worker
+extern std::shared_ptr<BaseReducer> get_reducer_from_task_factory(const std::string &user_id);
+/**
+ * Base Class for Three task , map , reduce and heartbeat
+ */
+class BaseHandler
 {
 public:
-    // Constructor and Destructor
-    Worker(const string &ip_addr_port);
-    ~Worker();
-
-    // Run the worker
-    bool run();
-
-    // Worker status
-    enum WorkerStatus
+    BaseHandler(
+        masterworker::Map_Reduce::AsyncService *service,
+        grpc::ServerCompletionQueue *queue,
+        std::string worker_address)
+        : service(service), s_queue(queue), worker_address(std::move(worker_address)), status_(CREATE)
     {
-        IDLE,
-        MAPPING,
-        REDUCING
-    };
-
-    WorkerStatus get_status() const
-    {
-        return work_status_;
+        Proceed();
     }
 
-    void set_status(WorkerStatus status)
+    virtual void Proceed()
     {
-        work_status_ = status;
+    }
+
+    ~BaseHandler() = default;
+
+protected:
+    masterworker::Map_Reduce::AsyncService *service;
+    grpc::ServerCompletionQueue *s_queue;
+    std::string worker_address;
+    // State engine used from GRPC default example for Async Server.
+    grpc::ServerContext ctx_;
+    enum CallStatus
+    {
+        CREATE,
+        PROCESS,
+        FINISH
+    };
+    CallStatus status_;
+};
+/**
+ * Mapper Class
+ */
+class MapperHandler final : BaseHandler
+{
+public:
+    /**
+     * Constructor for Mapper Class which inits class
+     * @param service
+     * @param pQueue
+     * @param basicString
+     */
+    MapperHandler(
+        masterworker::Map_Reduce::AsyncService *service,
+        grpc::ServerCompletionQueue *pQueue,
+        std::string basicString)
+        : BaseHandler(service, pQueue, basicString), m_writer(&ctx_)
+    {
+        Proceed();
+    }
+
+    void Proceed()
+    {
+        if (status_ == CREATE)
+        {
+            status_ = PROCESS;
+            service->Requestmap(&ctx_, &mapRequest, &m_writer, s_queue, s_queue, this);
+        }
+        else if (status_ == PROCESS)
+        {
+            new MapperHandler(service, s_queue, worker_address);
+            mapResponse = handle_mapper_job(mapRequest);
+            status_ = FINISH;
+            m_writer.Finish(mapResponse, grpc::Status::OK, this);
+        }
+        else
+        {
+            GPR_ASSERT(status_ == FINISH);
+            delete this;
+        }
     }
 
 private:
-    // Private member variables
-    WorkerStatus work_status_;
+    masterworker::Map_Request mapRequest;
+    masterworker::Map_Response mapResponse;
+    grpc::ServerAsyncResponseWriter<masterworker::Map_Response> m_writer;
 
-    enum JobType
+    masterworker::Map_Response handle_mapper_job(masterworker::Map_Request request);
+
+    BaseMapperInternal *get_basemapper_internal(BaseMapper *mapper);
+    FileShard convert_grpc_spec(masterworker::partition partition);
+};
+/**
+ * Reducer Class
+ */
+class ReducerHandler final : BaseHandler
+{
+public:
+    /**
+     * Constructor for Reducer
+     * @param service
+     * @param pQueue
+     * @param basicString
+     */
+    ReducerHandler(
+        masterworker::Map_Reduce::AsyncService *service,
+        grpc::ServerCompletionQueue *pQueue,
+        std::string basicString)
+        : BaseHandler(service, pQueue, basicString), r_writer(&ctx_)
     {
-        PING = 1,
-        MAP = 2,
-        REDUCE = 3
-    };
+        ReducerHandler::Proceed();
+    }
 
-    AssignTask::AsyncService task_service_;
-    unique_ptr<ServerCompletionQueue> task_cq_;
-    unique_ptr<Server> task_server_;
-    string port_;
-
-    // Class to handle incoming RPCs
-    class CallData
+    void Proceed()
     {
-    public:
-        CallData(AssignTask::AsyncService *service, ServerCompletionQueue *cq, JobType job_type, const string &worker_id)
-            : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE), job_type_(job_type), worker_id_(worker_id)
+        if (status_ == CREATE)
         {
-            Proceed();
+            status_ = PROCESS;
+            service->Requestreduce(&ctx_, &ReduceRequest, &r_writer, s_queue, s_queue, this);
         }
-
-        void Proceed()
+        else if (status_ == PROCESS)
         {
-            if (status_ == CREATE)
-            {
-                status_ = PROCESS;
-                switch (job_type_)
-                {
-                case PING:
-                    service_->RequestPing(&ctx_, &ping_request_, &responder_, cq_, cq_, this);
-                    break;
-                case MAP:
-                    service_->RequestMap(&ctx_, &map_request_, &responder_, cq_, cq_, this);
-                    break;
-                case REDUCE:
-                    service_->RequestReduce(&ctx_, &reduce_request_, &responder_, cq_, cq_, this);
-                    break;
-                default:
-                    cerr << "Unknown job type in Proceed CREATE state" << endl;
-                    break;
-                }
-            }
-            else if (status_ == PROCESS)
-            {
-                // Spawn a new CallData instance to serve new clients while we process the current request.
-                new CallData(service_, cq_, job_type_, worker_id_);
-
-                // Process the request based on job type
-                switch (job_type_)
-                {
-                case PING:
-                    HandlePing();
-                    break;
-                case MAP:
-                    HandleMap();
-                    break;
-                case REDUCE:
-                    HandleReduce();
-                    break;
-                default:
-                    cerr << "Unknown job type in Proceed PROCESS state" << endl;
-                    break;
-                }
-                status_ = FINISH;
-                responder_.Finish(task_reply_, Status::OK, this);
-            }
-            else
-            {
-                GPR_ASSERT(status_ == FINISH);
-                delete this;
-            }
+            new ReducerHandler(service, s_queue, worker_address);
+            ReduceResponse = handle_reducer_job(ReduceRequest);
+            status_ = FINISH;
+            r_writer.Finish(ReduceResponse, grpc::Status::OK, this);
         }
-
-    private:
-        // Handle Ping request
-        void HandlePing()
+        else
         {
-            cout << "Worker [" << worker_id_ << "] received Ping request" << endl;
-            task_reply_.set_task_type("PING");
+            GPR_ASSERT(status_ == FINISH);
+            delete this;
         }
+    }
 
-        // Handle Map request
-        void HandleMap()
+private:
+    masterworker::Reduce_Request ReduceRequest;
+    masterworker::Reduce_Response ReduceResponse;
+    grpc::ServerAsyncResponseWriter<masterworker::Reduce_Response> r_writer;
+
+    masterworker::Reduce_Response handle_reducer_job(masterworker::Reduce_Request request);
+
+    BaseReducerInternal *get_basereducer_internal(BaseReducer *reducer);
+};
+/**
+ * Heartbeat class
+ */
+class HeartbeatHandler final : BaseHandler
+{
+public:
+    /**
+     * Constructor for Heartbeat class
+     * @param service
+     * @param pQueue
+     * @param basicString
+     */
+    HeartbeatHandler(
+        masterworker::Map_Reduce::AsyncService *service,
+        grpc::ServerCompletionQueue *pQueue,
+        std::string basicString)
+        : BaseHandler(service, pQueue, basicString), h_writer(&ctx_)
+    {
+        HeartbeatHandler::Proceed();
+    }
+
+    void Proceed()
+    {
+        if (status_ == CREATE)
         {
-            cout << "Worker [" << worker_id_ << "] received Map request" << endl;
-
-            // Get mapper from task factory
-            auto mapper = get_mapper_from_task_factory(map_request_.user_id());
-            if (!mapper)
-            {
-                cerr << "Failed to get mapper for user_id: " << map_request_.user_id() << endl;
-                return;
-            }
-
-            // Process each shard piece
-            const auto &shard_pieces = map_request_.shard();
-            for (const auto &shard_piece : shard_pieces)
-            {
-                ifstream input_file(shard_piece.file_name());
-                if (!input_file.is_open())
-                {
-                    cerr << "Failed to open file: " << shard_piece.file_name() << endl;
-                    continue;
-                }
-
-                input_file.seekg(shard_piece.start_index());
-                if (input_file.fail())
-                {
-                    cerr << "Failed to seek to position " << shard_piece.start_index() << " in file " << shard_piece.file_name() << endl;
-                    input_file.close();
-                    continue;
-                }
-
-                string line;
-                while (input_file.good() && input_file.tellg() < shard_piece.end_index())
-                {
-                    getline(input_file, line);
-                    if (!line.empty())
-                    {
-                        mapper->map(line);
-                    }
-                }
-                input_file.close();
-            }
-
-            // Write the mapper's intermediate data to disk
-            string output_filename = worker_id_ + '_' + map_request_.job_id();
-            mapper->impl_->write_data(output_filename, map_request_.num_reducers());
-
-            // Prepare the reply
-            task_reply_.set_task_type("MAP");
-            task_reply_.set_job_id(map_request_.job_id());
-            task_reply_.set_out_file(output_filename);
-            cout << "Worker [" << worker_id_ << "] completed Map task: " << output_filename << endl;
+            status_ = PROCESS;
+            service->Requestheartbeat(&ctx_, &request, &h_writer, s_queue, s_queue, this);
         }
-
-        // Handle Reduce request
-        void HandleReduce()
+        else if (status_ == PROCESS)
         {
-            cout << "Worker [" << worker_id_ << "] received Reduce request" << endl;
-
-            // Get reducer from task factory
-            auto reducer = get_reducer_from_task_factory(reduce_request_.user_id());
-            if (!reducer)
-            {
-                cerr << "Failed to get reducer for user_id: " << reduce_request_.user_id() << endl;
-                return;
-            }
-
-            // Set the final output file
-            reducer->impl_->set_final_file(reduce_request_.output_file());
-            // Collect intermediate files
-            for (const auto &input_file : reduce_request_.input_files())
-            {
-                string combined_name = input_file + "_R" + reduce_request_.section() + ".txt";
-                reducer->impl_->add_intermediate_file(combined_name);
-            }
-
-            // Group keys from intermediate files
-            reducer->impl_->group_keys();
-
-            // Reduce the grouped keys
-            reducer->impl_->process_reduction(reducer.get());
-
-            // Prepare the reply
-            task_reply_.set_task_type("REDUCE");
-            task_reply_.set_job_id(reduce_request_.job_id());
-            task_reply_.set_out_file(reduce_request_.output_file());
-            cout << "Worker [" << worker_id_ << "] completed Reduce task: " << reduce_request_.output_file() << endl;
+            new HeartbeatHandler(service, s_queue, worker_address);
+            response = handle_heartbeat_job(request);
+            status_ = FINISH;
+            h_writer.Finish(response, grpc::Status::OK, this);
         }
-
-        // Private member variables
-        AssignTask::AsyncService *service_;
-        ServerCompletionQueue *cq_;
-        ServerContext ctx_;
-
-        // The means to get back to the client.
-        ServerAsyncResponseWriter<TaskReply> responder_;
-
-        // Request and reply messages
-        PingRequest ping_request_;
-        MapRequest map_request_;
-        ReduceRequest reduce_request_;
-        TaskReply task_reply_;
-
-        // Job and worker information
-        JobType job_type_;
-        string worker_id_;
-
-        enum CallStatus
+        else
         {
-            CREATE,
-            PROCESS,
-            FINISH
-        };
-        CallStatus status_;
-    };
+            GPR_ASSERT(status_ == FINISH);
+            delete this;
+        }
+    }
+
+private:
+    masterworker::Heartbeat_Payload request, response;
+    grpc::ServerAsyncResponseWriter<masterworker::Heartbeat_Payload> h_writer;
+
+    masterworker::Heartbeat_Payload handle_heartbeat_job(masterworker::Heartbeat_Payload request);
 };
 
-// Destructor
-Worker::~Worker()
+/**
+ * CS6210_TASK: Handle all the task a Worker is supposed to do.
+ * This is a big task for this project, will test your understanding of mapreduce
+ * */
+class Worker
 {
-    if (task_server_)
+
+public:
+    /* DON'T change the function signature of this constructor */
+    Worker(std::string ip_addr_port);
+
+    /* DON'T change this function's signature */
+    bool run();
+
+    ~Worker()
     {
-        task_server_->Shutdown();
+        Worker::clean_exit = true;
+        this->server->Shutdown();
     }
-    if (task_cq_)
+
+    static BaseReducerInternal *get_basereducer_internal(BaseReducer *reducer)
     {
-        task_cq_->Shutdown();
+        return reducer->impl_;
     }
-    cout << "Worker at port " << port_ << " shut down." << endl;
+
+    static BaseMapperInternal *get_basemapper_internal(BaseMapper *mapper)
+    {
+        return mapper->impl_;
+    }
+
+private:
+    /* NOW you can add below, data members and member functions as per the need of
+     * your implementation*/
+    grpc::ServerBuilder builder;
+    std::unique_ptr<grpc::ServerCompletionQueue> work_queue;
+    std::unique_ptr<grpc::ServerCompletionQueue> heartbeat_queue;
+    masterworker::Map_Reduce::AsyncService mapreduce_service;
+    std::unique_ptr<grpc::Server> server;
+    std::string worker_uuid;
+
+    void heartbeat_handler();
+
+    bool clean_exit = false;
+};
+
+/**
+ * ip_addr_port is the only information you get when started.
+ * You can populate your other class data members here if you want
+ * @param ip_addr_port
+ */
+inline Worker::Worker(std::string ip_addr_port)
+{
+    std::cout << "listening on " << ip_addr_port << std::endl;
+    Worker::builder.AddListeningPort(ip_addr_port, grpc::InsecureServerCredentials());
+    Worker::builder.RegisterService(&this->mapreduce_service);
+    Worker::work_queue = Worker::builder.AddCompletionQueue();
+    Worker::heartbeat_queue = Worker::builder.AddCompletionQueue();
+    Worker::worker_uuid = ip_addr_port.substr(ip_addr_port.find_first_of(':') + 1);
 }
 
-// Constructor
-Worker::Worker(const string &ip_addr_port) : work_status_(IDLE)
+/**
+ * Here you go. once this function is called your woker's job is to
+ * keep looking for new tasks from Master, complete when given one and again
+ * keep looking for the next one. Note that you have the access to BaseMapper's
+ * member BaseMapperInternal impl_ and BaseReduer's member BaseReducerInternal
+ * impl_ directly, so you can manipulate them however you want when running
+ * map/reduce tasks
+ * @return
+ */
+inline bool Worker::run()
 {
-    cout << "Starting Worker at " << ip_addr_port << endl;
+    void *tag;
+    bool ok;
+    Worker::server = Worker::builder.BuildAndStart();
+    std::thread heartbeat_job(&Worker::heartbeat_handler, this);
+    new MapperHandler(&(Worker::mapreduce_service), work_queue.get(), worker_uuid);
+    new ReducerHandler(&(Worker::mapreduce_service), work_queue.get(), worker_uuid);
 
-    // Extract port from ip_addr_port
-    auto pos = ip_addr_port.find(':');
-    if (pos != string::npos && pos + 1 < ip_addr_port.size())
+    while (true)
     {
-        port_ = ip_addr_port.substr(pos + 1);
+        GPR_ASSERT(work_queue->Next(&tag, &ok));
+        static_cast<BaseHandler *>(tag)->Proceed();
     }
-    else
-    {
-        cerr << "Invalid ip_addr_port format: " << ip_addr_port << endl;
-        port_ = "";
-    }
-
-    // Build and start the server
-    ServerBuilder builder;
-    builder.AddListeningPort(ip_addr_port, grpc::InsecureServerCredentials());
-    builder.RegisterService(&task_service_);
-    task_cq_ = builder.AddCompletionQueue();
-    task_server_ = builder.BuildAndStart();
-
-    if (task_server_)
-    {
-        cout << "Worker listening on " << ip_addr_port << endl;
-    }
-    else
-    {
-        cerr << "Failed to start server at " << ip_addr_port << endl;
-    }
+    return true;
 }
-
-// Run method
-bool Worker::run()
+/**
+ * Heartbeat handler , recives heartbeat request and send them back with same values and ALIVE state,
+ * unless clean_exit is marked true.
+ */
+inline void Worker::heartbeat_handler()
 {
-    // Start CallData instances for each job type
-    new CallData(&task_service_, task_cq_.get(), PING, port_);
-    new CallData(&task_service_, task_cq_.get(), MAP, port_);
-    new CallData(&task_service_, task_cq_.get(), REDUCE, port_);
-
     void *tag;
     bool ok;
 
-    // Main loop to handle incoming requests
-    while (task_cq_->Next(&tag, &ok))
+    new HeartbeatHandler(&(Worker::mapreduce_service), heartbeat_queue.get(), worker_uuid);
+
+    while (true)
     {
-        if (!ok)
+        if (Worker::clean_exit)
+            return;
+        GPR_ASSERT(heartbeat_queue->Next(&tag, &ok));
+
+        static_cast<BaseHandler *>(tag)->Proceed();
+    }
+}
+/**
+ * Conver grpc payload to FileShard.
+ * @param partition
+ * @return FileShard struct equivalent  of gprc partition payload.
+ */
+FileShard MapperHandler::convert_grpc_spec(masterworker::partition partition)
+{
+    FileShard shard{};
+    shard.shard_id = partition.shard_id();
+    for (auto f : partition.file_list())
+    {
+        splitFile temp{};
+        temp.filename = f.filename();
+        temp.offsets = {f.start_offset(), f.end_offset()};
+        shard.split_file_list.push_back(temp);
+    }
+    return shard;
+}
+/**
+ * Given GRPC Map request , Select intermedidate file. usually TEMP_DIR/<partition_count>_<worker_port>.txt
+ * Reads shard files and apply user defined map function on it.
+ * @param request grpc Map Request , check .proto
+ * @return grpc Map Response payload , check .proto
+ */
+inline masterworker::Map_Response MapperHandler::handle_mapper_job(masterworker::Map_Request request)
+{
+    masterworker::Map_Response payload;
+    auto user_mapper_func = get_mapper_from_task_factory(request.uuid());
+    auto base_mapper = get_basemapper_internal(user_mapper_func.get());
+    auto partition_count = request.partition_count();
+    base_mapper->intermediate_file_list.reserve(partition_count);
+    for (int i = 0; i < partition_count; i++)
+    {
+        base_mapper->intermediate_file_list.push_back(std::string(
+            std::string(TEMP_DIR) + "/" + std::to_string(i) + "_" + MapperHandler::worker_address + ".txt"));
+    }
+    FileShard local_shard;
+    for (int shard_count = 0; shard_count < request.shard_size(); shard_count++)
+    {
+        local_shard = MapperHandler::convert_grpc_spec(request.shard(shard_count));
+
+        for (const auto &i : local_shard.split_file_list)
         {
-            // Server is shutting down
-            break;
+            std::string mapper_line;
+            std::ifstream f(i.filename, std::ios::binary);
+            if (!f.good())
+            {
+                std::cerr << i.filename << " not open...." << std::endl;
+            }
+
+            f.seekg(i.offsets.first);
+            std::string dummy(i.offsets.second - i.offsets.first, ' ');
+            f.read(&dummy[0], i.offsets.second - i.offsets.first);
+            std::stringstream stream(dummy);
+            while (std::getline(stream, mapper_line))
+            {
+                user_mapper_func->map(mapper_line);
+            }
         }
-        static_cast<CallData *>(tag)->Proceed();
+    }
+    base_mapper->final_flush();
+    for (const auto &i : base_mapper->intermediate_file_list)
+    {
+        payload.add_file_list(i);
     }
 
-    cout << "Worker run loop exiting." << endl;
-    return true;
+    return payload;
+}
+/**
+ * Given GRPC Reduce request , Given output file , runs user defined reduce function and emits output data.
+ * @param request grpc Reduce Request , check .proto
+ * @return grpc Reduce Response payload , check .proto
+ */
+inline masterworker::Reduce_Response ReducerHandler::handle_reducer_job(masterworker::Reduce_Request request)
+{
+    masterworker::Reduce_Response payload;
+    auto user_reducer_func = get_reducer_from_task_factory(request.uuid());
+    auto base_reducer = get_basereducer_internal(user_reducer_func.get());
+    base_reducer->file_name = request.output_file();
+    std::map<std::string, std::vector<std::string>> key_value_map;
+    payload.set_file_name(request.output_file());
+    auto d = request.file_list();
+    for (const auto &f : d)
+    {
+        std::ifstream fs(f);
+        std::string dummy;
+        try
+        {
+            if (fs.good() && fs.is_open())
+            {
+                while (std::getline(fs, dummy))
+                {
+                    key_value_map[dummy.substr(0, dummy.find_first_of(DELIMITER))].push_back(
+                        dummy.substr(dummy.find_first_of(DELIMITER) + 1));
+                }
+            }
+        }
+        catch (std::ifstream::failure &e)
+        {
+            std::cerr << f + "  Error: " + e.what() << std::endl;
+        }
+    }
+    for (const auto &k : key_value_map)
+    {
+        user_reducer_func->reduce(k.first, k.second);
+    }
+    key_value_map.clear();
+    return payload;
+}
+/**
+ * Handles Heartbeat request and return heartbeat payload
+ * @param request Heartbeat payload check .proto
+ * @return Heartbeat payload
+ */
+inline masterworker::Heartbeat_Payload HeartbeatHandler::handle_heartbeat_job(masterworker::Heartbeat_Payload request)
+{
+    masterworker::Heartbeat_Payload payload;
+    payload.set_id(request.id());
+    if (true)
+        payload.set_status(masterworker::Heartbeat_Payload_type_ALIVE);
+    return payload;
+}
+/**
+ *
+ * @param reducer
+ * @return BaseReducerinternal Class
+ */
+inline BaseReducerInternal *ReducerHandler::get_basereducer_internal(BaseReducer *reducer)
+{
+    return Worker::get_basereducer_internal(reducer);
+}
+/**
+ *
+ * @param mapper
+ * @return BaseMapperinternal Class
+ */
+inline BaseMapperInternal *MapperHandler::get_basemapper_internal(BaseMapper *mapper)
+{
+    return Worker::get_basemapper_internal(mapper);
 }
