@@ -16,7 +16,6 @@
 namespace fs = std::filesystem;
 
 #define ALIVE true
-
 #define TIMEOUT 5
 
 enum WORKER_STATUS
@@ -25,11 +24,13 @@ enum WORKER_STATUS
     BUSY,
     DEAD
 };
+
 enum WORKER_TYPE
 {
     MAPPER,
     REDUCER
 };
+
 struct heartbeat_payload
 {
     std::string id;
@@ -78,9 +79,10 @@ public:
 
     bool recv_heartbeat();
 
-    void schedule_reduce_job(MapReduceSpec spec, std::vector<std::string> file_list, std::string output_file_location);
+    void schedule_reduce_job(const MapReduceSpec &spec, const std::vector<std::string> &file_list, const std::string &output_file_location);
 
-    void schedule_mapper_jobs(MapReduceSpec spec, FileShard shard);
+    void schedule_mapper_jobs(const MapReduceSpec &spec, const FileShard &shard);
+
     ~WorkerClient()
     {
         heartbeat_queue->Shutdown();
@@ -92,7 +94,7 @@ private:
     std::string worker_address;
     grpc::CompletionQueue *heartbeat_queue;
 
-    void convert_grpc_spec(FileShard *shard, masterworker::partition *partition);
+    void convert_grpc_spec(const FileShard *shard, masterworker::partition *partition);
 };
 
 WorkerClient::WorkerClient(const std::string &address, grpc::CompletionQueue *queue)
@@ -141,12 +143,12 @@ bool WorkerClient::recv_heartbeat()
 }
 
 void WorkerClient::schedule_reduce_job(
-    MapReduceSpec spec,
-    std::vector<std::string> file_list,
-    std::string output_file_location)
+    const MapReduceSpec &spec,
+    const std::vector<std::string> &file_list,
+    const std::string &output_file_location)
 {
     masterworker::Reduce_Request reduceRequest;
-    reduceRequest.set_uuid(spec.user);
+    reduceRequest.set_uuid(spec.username);
     reduceRequest.set_output_file(output_file_location);
     for (const auto &l : file_list)
     {
@@ -162,10 +164,10 @@ void WorkerClient::schedule_reduce_job(
     call->reducer_response_reader->Finish(&call->result, &call->status, (void *)call);
 }
 
-void WorkerClient::convert_grpc_spec(FileShard *shard, masterworker::partition *partition)
+void WorkerClient::convert_grpc_spec(const FileShard *shard, masterworker::partition *partition)
 {
     partition->set_shard_id(shard->shard_id);
-    for (auto f : shard->split_file_list)
+    for (const auto &f : shard->split_file_list)
     {
         auto temp = partition->add_file_list();
         temp->set_filename(f.filename);
@@ -174,15 +176,15 @@ void WorkerClient::convert_grpc_spec(FileShard *shard, masterworker::partition *
     }
 }
 
-void WorkerClient::schedule_mapper_jobs(MapReduceSpec spec, FileShard shard)
+void WorkerClient::schedule_mapper_jobs(const MapReduceSpec &spec, const FileShard &shard)
 {
     masterworker::Map_Request mapRequest;
-    mapRequest.set_uuid(spec.user);
-    mapRequest.set_partition_count(spec.output_files);
+    mapRequest.set_uuid(spec.username);
+    mapRequest.set_partition_count(spec.num_output_files);
     auto s = mapRequest.add_shard();
     this->convert_grpc_spec(&shard, s);
     auto call = new MapCall;
-    call->worker_ip_addr = WorkerClient::worker_address;
+    call->worker_ip_addr = this->worker_address;
     call->map_response_reader = WorkerClient::stub->PrepareAsyncmap(&call->context, mapRequest, WorkerClient::queue);
     call->is_map_job = true;
     call->map_response_reader->StartCall();
@@ -225,14 +227,14 @@ private:
     std::vector<struct worker> workers{};
     std::mutex worker_queue_mutex;
     std::condition_variable condition_worker_queue_mutex;
-    worker *find_worker_by_name(std::string t);
+    worker *find_worker_by_name(const std::string &t);
     std::vector<int> find_worker_by_status(WORKER_STATUS t);
 
     bool init_heartbeat = true;
     std::mutex heartbeat_mutex;
     std::condition_variable condition_heartbeat;
     void heartbeat();
-    void handler_dead_worker(std::string worker);
+    void handler_dead_worker(const std::string &worker);
 
     std::mutex cleanup_mutex;
     std::condition_variable condition_cleanup_mutex;
@@ -269,7 +271,7 @@ std::vector<int> Master::find_worker_by_status(WORKER_STATUS t)
     return temp;
 }
 
-worker *Master::find_worker_by_name(std::string t)
+worker *Master::find_worker_by_name(const std::string &t)
 {
     for (auto &w : Master::workers)
     {
@@ -284,7 +286,7 @@ Master::Master(const MapReduceSpec &mr_spec, const std::vector<FileShard> &file_
     : mr_spec(mr_spec), file_shards(file_shards)
 {
     cq_ = new grpc::CompletionQueue();
-    for (const auto &i : Master::mr_spec.worker_endpoints)
+    for (const auto &i : Master::mr_spec.worker_addresses)
     {
         dummy.worker_address = i;
         dummy.workerStatus = FREE;
@@ -299,9 +301,9 @@ bool Master::run()
     std::thread check_heartbeat_status(&Master::heartbeat, this);
 #if __cplusplus >= 201703L
     fs::create_directory(TEMP_DIR);
-    if (fs::is_directory(Master::mr_spec.output_directory))
+    if (fs::is_directory(Master::mr_spec.output_dir))
     {
-        for (const auto &fi : fs::directory_iterator(Master::mr_spec.output_directory))
+        for (const auto &fi : fs::directory_iterator(Master::mr_spec.output_dir))
         {
             fs::remove(fi.path());
         }
@@ -379,7 +381,7 @@ bool Master::run()
     std::thread reduce_job(&Master::async_reducer, this);
 
     bool partition_done = false;
-    Master::completion_count = Master::assigned_partition = Master::mr_spec.output_files;
+    Master::completion_count = Master::assigned_partition = Master::mr_spec.num_output_files;
     std::vector<int> output_vector(Master::assigned_partition);
     std::iota(output_vector.begin(), output_vector.end(), 0);
     while (!partition_done && Master::assigned_partition > 0)
@@ -400,7 +402,7 @@ bool Master::run()
                 }
                 Master::workers[j].workerType = REDUCER;
                 output_file =
-                    Master::mr_spec.output_directory + "/" + std::string("output_file_").append(std::to_string(i));
+                    Master::mr_spec.output_dir + "/" + std::string("output_file_").append(std::to_string(i));
                 Master::workers[j].output_reducer_location_map[output_file] = assign_files_to_reducer(i);
                 Master::workers[j].current_output = i;
                 Master::workers[j].workerStatus = BUSY;
@@ -502,7 +504,7 @@ void Master::heartbeat()
     }
 }
 
-void Master::handler_dead_worker(std::string worker)
+void Master::handler_dead_worker(const std::string &worker)
 {
     std::cerr << "Handling dead worker: " << worker << std::endl;
     auto w = Master::find_worker_by_name(worker);
@@ -694,7 +696,7 @@ std::vector<std::string> Master::assign_files_to_reducer(int output_id)
     for (int i = 0; i < Master::intermidateFiles.size(); i++)
     {
         auto f = Master::intermidateFiles[i];
-        if (i % Master::mr_spec.output_files == output_id)
+        if (i % Master::mr_spec.num_output_files == output_id)
         {
             file_list.insert(f);
         }
