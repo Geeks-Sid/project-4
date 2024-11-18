@@ -167,7 +167,7 @@ void WorkerClient::schedule_reduce_job(
 void WorkerClient::convert_grpc_spec(const FileShard *shard, masterworker::partition *partition)
 {
     partition->set_shard_id(shard->shard_id);
-    for (const auto &f : shard->split_file_list)
+    for (const auto &f : shard->segments)
     {
         auto temp = partition->add_file_list();
         temp->set_filename(f.filename);
