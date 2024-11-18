@@ -6,96 +6,153 @@
 #include <fstream>
 
 #include "mapreduce_spec.h"
+
 #define KB 1024
 #define TEMP_DIR "intermediate"
 
-inline std::uintmax_t get_filesize(std::string path)
-{
-    struct stat stat_buf;
-    int rc = stat(path.c_str(), &stat_buf);
-    return rc == 0 ? stat_buf.st_size : -1;
-}
-
-struct splitFile
-{
-    std::string filename;
-    std::pair<std::uintmax_t, std::uintmax_t> offsets;
-};
-
+/**
+ * @brief Represents a shard of files, containing multiple file segments.
+ */
 struct FileShard
 {
-    int shard_id = -1;
-    std::vector<splitFile> split_file_list;
+    int shard_id = -1;                 ///< The ID of the shard.
+    std::vector<FileSegment> segments; ///< List of file segments in the shard.
 };
 
-inline std::uintmax_t approx_split(
-    const std::basic_string<char> fileName,
-    uintmax_t offset,
-    uintmax_t optimal_shard_size)
+/**
+ * @brief Represents a portion of a file with specific offsets.
+ */
+struct FileSegment
 {
-    std::uintmax_t approx_size;
-    std::ifstream fs(fileName);
-    if (!fs.good())
+    std::string filename;                              ///< The name of the file.
+    std::pair<std::uintmax_t, std::uintmax_t> offsets; ///< The start and end offsets of the segment.
+};
+
+/**
+ * @brief Approximates the size of a file split based on the optimal shard size.
+ *
+ * This function calculates an approximate size for a file split by reading
+ * from the file starting at a given offset and extending to the next newline.
+ *
+ * @param file_name The name of the file.
+ * @param offset The starting offset in the file.
+ * @param optimal_shard_size The optimal size for the shard.
+ * @return The approximated size of the split.
+ */
+inline std::uintmax_t approximateSplitSize(
+    const std::string &file_name,
+    std::uintmax_t offset,
+    std::uintmax_t optimal_shard_size)
+{
+
+    std::ifstream file_stream(file_name);
+    if (!file_stream.good())
     {
-        std::cerr << "Error opening file: " << fileName << std::endl;
+        std::cerr << "Error: Unable to open file " << file_name << std::endl;
         return 0;
     }
-    fs.seekg(offset + optimal_shard_size);
-    std::string temp_str;
-    std::getline(fs, temp_str);
-    approx_size = optimal_shard_size + temp_str.length() + 1;
-    return approx_size;
+
+    file_stream.seekg(offset + optimal_shard_size);
+    std::string line;
+    std::getline(file_stream, line);
+    return optimal_shard_size + line.length() + 1;
 }
 
-inline bool shard_files(const MapReduceSpec &mr_spec, std::vector<FileShard> &fileShards)
+/**
+ * @brief Splits files into shards based on the MapReduce specification.
+ *
+ * This function divides input files into shards, each containing multiple file segments.
+ * The size of each shard is determined by the map_size_kb parameter in the MapReduce specification.
+ *
+ * @param mr_spec The MapReduce specification containing input files and shard size.
+ * @param file_shards The vector to store the resulting file shards.
+ * @return True if the operation is successful, false otherwise.
+ */
+inline bool shard_files(const MapReduceSpec &mr_spec, std::vector<FileShard> &file_shards)
 {
-    std::uintmax_t optimal_shard_size = mr_spec.map_kb * KB;
-    std::intmax_t rem_shard_size = optimal_shard_size;
+    std::uintmax_t optimal_shard_size = mr_spec.map_size_kb * KB;
+    std::intmax_t remaining_shard_size = optimal_shard_size;
     FileShard current_shard;
-    current_shard.shard_id = fileShards.size();
-    for (const auto &f : mr_spec.input_files)
+    current_shard.shard_id = file_shards.size();
+
+    for (const auto &file : mr_spec.input_file_paths)
     {
-        std::uintmax_t file_size, rem_file_size;
-        file_size = rem_file_size = get_filesize(f);
-        std::uintmax_t offset = 0;
-        splitFile current_split_file;
-        while (rem_file_size > 0)
+        std::uintmax_t file_size = getFileSize(file);
+        if (file_size == static_cast<std::uintmax_t>(-1))
         {
-            current_split_file.filename = f;
-            if (rem_shard_size >= rem_file_size)
+            std::cerr << "Error: Skipping file due to size retrieval failure: " << file << std::endl;
+            continue;
+        }
+
+        std::uintmax_t remaining_file_size = file_size;
+        std::uintmax_t offset = 0;
+        FileSegment current_segment;
+
+        while (remaining_file_size > 0)
+        {
+            current_segment.filename = file;
+            if (remaining_shard_size >= remaining_file_size)
             {
-                current_split_file.offsets = {offset, offset + rem_file_size};
-                rem_shard_size -= rem_file_size;
-                rem_file_size = 0;
-                current_shard.split_file_list.push_back(current_split_file);
+                // If the remaining shard size can accommodate the remaining file size
+                current_segment.offsets = {offset, offset + remaining_file_size};
+                remaining_shard_size -= remaining_file_size;
+                remaining_file_size = 0;
+                current_shard.segments.push_back(current_segment);
             }
             else
             {
-                std::uintmax_t nearest_size;
-                nearest_size = offset + optimal_shard_size > file_size ? file_size - offset
-                                                                       : approx_split(f, offset, rem_shard_size);
-                current_split_file.offsets = {offset, offset + nearest_size};
+                // Calculate the nearest size for the next split
+                std::uintmax_t nearest_size = (offset + optimal_shard_size > file_size)
+                                                  ? file_size - offset
+                                                  : approximateSplitSize(file, offset, remaining_shard_size);
+
+                current_segment.offsets = {offset, offset + nearest_size};
                 if (offset > offset + nearest_size)
                 {
                     std::cerr << "Error: Offset calculation went wrong." << std::endl;
-                    exit(1);
+                    exit(EXIT_FAILURE);
                 }
-                current_shard.split_file_list.push_back(current_split_file);
-                current_split_file = splitFile();
-                rem_shard_size -= nearest_size;
-                rem_file_size -= nearest_size;
+                current_shard.segments.push_back(current_segment);
+                current_segment = FileSegment();
+                remaining_shard_size -= nearest_size;
+                remaining_file_size -= nearest_size;
                 offset += nearest_size;
             }
-            if (rem_shard_size <= 0)
+
+            if (remaining_shard_size <= 0)
             {
-                fileShards.push_back(current_shard);
+                // If the current shard is full, add it to the list and start a new shard
+                file_shards.push_back(current_shard);
                 current_shard = FileShard();
-                current_shard.shard_id = fileShards.size();
-                rem_shard_size = optimal_shard_size;
+                current_shard.shard_id = file_shards.size();
+                remaining_shard_size = optimal_shard_size;
             }
         }
     }
+
     if (current_shard.shard_id > -1)
-        fileShards.push_back(current_shard);
+    {
+        file_shards.push_back(current_shard);
+    }
     return true;
+}
+
+/**
+ * @brief Get the size of a file.
+ *
+ * This function retrieves the size of a file given its path.
+ *
+ * @param file_path The path to the file.
+ * @return The size of the file in bytes, or -1 if an error occurs.
+ */
+inline std::uintmax_t getFileSize(const std::string &file_path)
+{
+    struct stat stat_buf;
+    int rc = stat(file_path.c_str(), &stat_buf);
+    if (rc != 0)
+    {
+        std::cerr << "Error: Unable to get file size for " << file_path << std::endl;
+        return -1;
+    }
+    return stat_buf.st_size;
 }
