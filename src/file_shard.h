@@ -2,47 +2,32 @@
 
 #include <sys/stat.h>
 #include <vector>
+#include <iostream>
+#include <fstream>
 
 #include "mapreduce_spec.h"
 #define KB 1024
 #define TEMP_DIR "intermediate"
-/**
- * Boiler plate function for retrieving file size
- * @param path
- * @return file size usually with 64bit value
- */
+
 inline std::uintmax_t get_filesize(std::string path)
 {
-#if __cplusplus >= 201703L
-    return fs::file_size(path);
-#else
     struct stat stat_buf;
     int rc = stat(path.c_str(), &stat_buf);
     return rc == 0 ? stat_buf.st_size : -1;
-#endif
 }
 
 struct splitFile
 {
     std::string filename;
-    std::pair<std::uintmax_t, std::uintmax_t> offsets; // Start , End
+    std::pair<std::uintmax_t, std::uintmax_t> offsets;
 };
 
-/* CS6210_TASK: Create your own data structure here, where you can hold information about file splits,
-     that your master would use for its own bookkeeping and to convey the tasks to the workers for mapping */
 struct FileShard
 {
     int shard_id = -1;
     std::vector<splitFile> split_file_list;
 };
 
-/**
- * finds nearest \n location in given shard file. usually its after the optimal size.
- * @param fileName
- * @param offset
- * @param optimal_shard_size
- * @return nearest file Offset for `\n` from given file offset. usually used as offset + return_value
- */
 inline std::uintmax_t approx_split(
     const std::basic_string<char> fileName,
     uintmax_t offset,
@@ -52,7 +37,7 @@ inline std::uintmax_t approx_split(
     std::ifstream fs(fileName);
     if (!fs.good())
     {
-        std::cerr << "Error Opening file: " << fileName << std::endl;
+        std::cerr << "Error opening file: " << fileName << std::endl;
         return 0;
     }
     fs.seekg(offset + optimal_shard_size);
@@ -62,12 +47,6 @@ inline std::uintmax_t approx_split(
     return approx_size;
 }
 
-/**
- * Create file shards from the list of input files, map_kilobytes * etc. using mr_spec you populated
- * @param mr_spec
- * @param fileShards
- * @return true if succeeded.
- */
 inline bool shard_files(const MapReduceSpec &mr_spec, std::vector<FileShard> &fileShards)
 {
     std::uintmax_t optimal_shard_size = mr_spec.map_kb * KB;
@@ -98,7 +77,7 @@ inline bool shard_files(const MapReduceSpec &mr_spec, std::vector<FileShard> &fi
                 current_split_file.offsets = {offset, offset + nearest_size};
                 if (offset > offset + nearest_size)
                 {
-                    perror("SOMETHING WENT WRONG......");
+                    std::cerr << "Error: Offset calculation went wrong." << std::endl;
                     exit(1);
                 }
                 current_shard.split_file_list.push_back(current_split_file);

@@ -1,6 +1,7 @@
+#include "mapreduce_impl.h"
+
 #include <iostream>
 
-#include "mapreduce_impl.h"
 #include "master.h"
 
 /* DON'T touch this function */

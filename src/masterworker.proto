@@ -5,7 +5,7 @@ package masterworker;
 service Map_Reduce {
   rpc map(Map_Request) returns (Map_Response);
   rpc reduce(Reduce_Request) returns (Reduce_Response);
-  rpc heartbeat(Heartbeat_Payload) returns (Heartbeat_Payload) ;
+  rpc heartbeat(Heartbeat_Payload) returns (Heartbeat_Payload);
 }
 
 message Map_Request {
@@ -19,11 +19,9 @@ message Map_Response {
 }
 
 message Reduce_Request {
-  string uuid = 1 ;
+  string uuid = 1;
   string output_file = 2;
-
   repeated string file_list = 4;
-
 }
 
 message Reduce_Response {
@@ -37,7 +35,6 @@ message Heartbeat_Payload {
     UNKNOWN = 2;
   }
   string id = 1;
-//  int64 timestamp = 2;
   type status = 3;
 }
 

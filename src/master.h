@@ -11,14 +11,10 @@
 #include "file_shard.h"
 #include "mapreduce_spec.h"
 #include "masterworker.grpc.pb.h"
-#if __cplusplus >= 201703L
 
-#if __GNUC__ > 7 || __APPLE_CC__ > 7
 #include <filesystem>
-#elif __GNUC__ == 7 || __APPLE_CC__ == 7
-#include <experimental/filesystem>
-#endif
-#endif
+namespace fs = std::filesystem;
+
 #define ALIVE true
 
 #define TIMEOUT 5
@@ -41,9 +37,6 @@ struct heartbeat_payload
     WORKER_STATUS workerStatus;
 };
 
-/**
- * Base Class to handle all Async Response.
- */
 class AsyncClientCall
 {
 public:
@@ -55,27 +48,20 @@ public:
     virtual ~AsyncClientCall() = default;
 };
 
-/**
- * Handles Async Map Response.
- */
 class MapCall : public AsyncClientCall
 {
 public:
     masterworker::Map_Response result;
     std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Map_Response>> map_response_reader;
 };
-/**
- * Handles Async Reduce Response.
- */
+
 class ReduceCall : public AsyncClientCall
 {
 public:
     masterworker::Reduce_Response result;
     std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Reduce_Response>> reducer_response_reader;
 };
-/**
- * Handles Async heartbeat Response.
- */
+
 class HeartbeatCall : public AsyncClientCall
 {
 public:
@@ -83,9 +69,6 @@ public:
     std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Heartbeat_Payload>> heartbeat_payload_reader;
 };
 
-/**
- * Worker Client class to communicate with worker class
- */
 class WorkerClient
 {
 public:
@@ -111,45 +94,30 @@ private:
 
     void convert_grpc_spec(FileShard *shard, masterworker::partition *partition);
 };
-/**
- * Constructor for worker client , create communication insecure channel for each worker.
- * @param address
- * @param queue
- */
+
 WorkerClient::WorkerClient(const std::string &address, grpc::CompletionQueue *queue)
     : queue(queue), worker_address(address)
 {
-    std::cout << "creating channel at " + address << std::endl;
+    std::cout << "Creating channel at " << address << std::endl;
     heartbeat_queue = new grpc::CompletionQueue();
     this->stub = masterworker::Map_Reduce::NewStub(grpc::CreateChannel(address, grpc::InsecureChannelCredentials()));
 }
-/**
- * Send Async Heartbeat Request to client to infer health. It sets deadline for TIMEOUT 5 secs if worker
- * times out in any case
- * @param current_time
- */
+
 void WorkerClient::send_heartbeat(std::int64_t current_time)
 {
-    //    std::cout << "Info " << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) << " " +
-    //    this->worker_address << " : Hbeat sent" << std::endl;
-
     std::chrono::system_clock::time_point deadline = std::chrono::system_clock::now() + std::chrono::seconds(TIMEOUT);
     auto call = new HeartbeatCall;
     call->worker_ip_addr = this->worker_address;
     call->context.set_deadline(deadline);
     masterworker::Heartbeat_Payload payload;
     payload.set_id(this->worker_address);
-    //    payload.set_timestamp(current_time);
     payload.set_status(masterworker::Heartbeat_Payload_type_UNKNOWN);
     call->heartbeat_payload_reader =
         WorkerClient::stub->PrepareAsyncheartbeat(&call->context, payload, WorkerClient::heartbeat_queue);
     call->heartbeat_payload_reader->StartCall();
     call->heartbeat_payload_reader->Finish(&call->result, &call->status, (void *)call);
 }
-/**
- * Async Heartbeat response reader ,
- * @return false if worker time out or unreachable or any other communication case.
- */
+
 bool WorkerClient::recv_heartbeat()
 {
     void *tag;
@@ -160,24 +128,18 @@ bool WorkerClient::recv_heartbeat()
     {
         if (call->result.status() == masterworker::Heartbeat_Payload_type_DEAD)
         {
-            std::cerr << "Error " << call->worker_ip_addr << " : Dead" << std::endl;
+            std::cerr << "Worker " << call->worker_ip_addr << " is dead" << std::endl;
             return false;
         }
         delete call;
         return true;
     }
-    auto temp = call->status;
-    std::cerr << "Error " << this->worker_address << " : " << call->status.error_message()
-              << "details : " << call->status.error_details() << "status code " << call->status.error_code() << "   ok "
-              << call->status.ok() << std::endl;
+    std::cerr << "Error with worker " << this->worker_address << ": " << call->status.error_message()
+              << ", details: " << call->status.error_details() << ", status code: " << call->status.error_code()
+              << ", ok: " << call->status.ok() << std::endl;
     return false;
 }
-/**
- * Schedules Reduce Jobs to worker.
- * @param spec mapreduce ini file data structure.
- * @param file_list
- * @param output_file_location
- */
+
 void WorkerClient::schedule_reduce_job(
     MapReduceSpec spec,
     std::vector<std::string> file_list,
@@ -199,11 +161,7 @@ void WorkerClient::schedule_reduce_job(
     call->reducer_response_reader->StartCall();
     call->reducer_response_reader->Finish(&call->result, &call->status, (void *)call);
 }
-/**
- * Convert FileShard struct to GRPC partition.
- * @param shard
- * @param partition
- */
+
 void WorkerClient::convert_grpc_spec(FileShard *shard, masterworker::partition *partition)
 {
     partition->set_shard_id(shard->shard_id);
@@ -216,11 +174,6 @@ void WorkerClient::convert_grpc_spec(FileShard *shard, masterworker::partition *
     }
 }
 
-/**
- * Sechules mapper job with Worker Client, similar to reduce , heartbeat etc
- * @param spec
- * @param shard
- */
 void WorkerClient::schedule_mapper_jobs(MapReduceSpec spec, FileShard shard)
 {
     masterworker::Map_Request mapRequest;
@@ -243,23 +196,17 @@ struct worker
     WORKER_TYPE workerType;
     FileShard current_shard;
     std::shared_ptr<WorkerClient> client;
-    std::map<std::string, std::vector<std::string>>
-        output_reducer_location_map; // Which intermediate files will be used
+    std::map<std::string, std::vector<std::string>> output_reducer_location_map;
     int current_output;
     bool dead_handled = false;
 };
 
-/* CS6210_TASK: Handle all the bookkeeping that Master is supposed to do.
-        This is probably the biggest task for this project, will test your
-   understanding of map reduce */
 class Master
 {
 
 public:
-    /* DON'T change the function signature of this constructor */
     Master(const MapReduceSpec &, const std::vector<FileShard> &);
 
-    /* DON'T change this function's signature */
     bool run();
     ~Master()
     {
@@ -269,15 +216,11 @@ public:
     }
 
 private:
-    /* NOW you can add below, data members and member functions as per the need of
-     * your implementation*/
-
-    grpc::CompletionQueue *cq_; // Map Reduce Work Assignment
+    grpc::CompletionQueue *cq_;
     bool server_state = ALIVE;
 
     MapReduceSpec mr_spec;
 
-    // Worker Queue
     worker dummy{};
     std::vector<struct worker> workers{};
     std::mutex worker_queue_mutex;
@@ -285,44 +228,34 @@ private:
     worker *find_worker_by_name(std::string t);
     std::vector<int> find_worker_by_status(WORKER_STATUS t);
 
-    // Heartbeat Stuff
     bool init_heartbeat = true;
     std::mutex heartbeat_mutex;
     std::condition_variable condition_heartbeat;
     void heartbeat();
     void handler_dead_worker(std::string worker);
 
-    // Clean up Stuff
     std::mutex cleanup_mutex;
     std::condition_variable condition_cleanup_mutex;
     void cleanup_files();
 
-    // Operational metadata for both map reduce
     int completion_count;
     bool ops_completed = false;
     std::mutex ops_mutex;
     std::condition_variable condition_ops_mutex;
 
-    // Map
     int assigned_shards;
     std::vector<FileShard> file_shards;
     std::vector<FileShard> missing_shards;
     std::vector<std::string> intermidateFiles;
     void async_map();
 
-    // Reduce
     int assigned_partition;
     std::vector<std::string> OutputFiles;
     std::vector<int> missing_output_files;
     void async_reducer();
     std::vector<std::string> assign_files_to_reducer(int output_id);
 };
-/**
- * Return list of Worker id with requested status,
- * `FREE OR BUSY OR DEAD`
- * @param t
- * @return list of Worker id with requested status
- */
+
 std::vector<int> Master::find_worker_by_status(WORKER_STATUS t)
 {
     std::vector<int> temp;
@@ -335,12 +268,7 @@ std::vector<int> Master::find_worker_by_status(WORKER_STATUS t)
     }
     return temp;
 }
-/**
- * Return Worker id with requested Name,
- *
- * @param t
- * @return pointer for Worker with requested name or Null pointer if not found
- */
+
 worker *Master::find_worker_by_name(std::string t)
 {
     for (auto &w : Master::workers)
@@ -348,18 +276,10 @@ worker *Master::find_worker_by_name(std::string t)
         if (w.worker_address == t)
             return &w;
     }
-    std::cerr << "worker " << t << " not found" << std::endl;
+    std::cerr << "Worker " << t << " not found" << std::endl;
     return nullptr;
 }
 
-/**
- * Constructor for Master ,
- * Inits worker clients given spec file.
- * This is all the information your master will get from the
- * framework. You can populate your other class data members here if you want
- * @param mr_spec
- * @param file_shards
- */
 Master::Master(const MapReduceSpec &mr_spec, const std::vector<FileShard> &file_shards)
     : mr_spec(mr_spec), file_shards(file_shards)
 {
@@ -374,19 +294,6 @@ Master::Master(const MapReduceSpec &mr_spec, const std::vector<FileShard> &file_
     }
 }
 
-/* CS6210_TASK: Here you go. once this function is called you will complete
- * whole map reduce task and return true if succeeded */
-/**
- * Brain of code ;)
- * Handles few things
- * 1. Creates Temp intermediate Dir
- * 2. Create Heartbeat thread for monitoring status of workers
- * 3. Assigns Workers Mapper , checks for dead worker and reassigns the work after cleanup.
- * 4. Creates mapping required for intermediate file to Output files.
- * 5. Assigns work to reducers and handle any dead reducers.
- * 6. Handles cleanup for intermediate files
- * @return true false based of worker update.
- */
 bool Master::run()
 {
     std::thread check_heartbeat_status(&Master::heartbeat, this);
@@ -421,7 +328,6 @@ bool Master::run()
             int i;
             {
                 std::unique_lock<std::mutex> shards(Master::cleanup_mutex);
-                // wait for cleanup mutex and free worker.
                 condition_cleanup_mutex.wait(shards, [this]
                                              { return !Master::find_worker_by_status(FREE).empty(); });
                 i = Master::find_worker_by_status(FREE)[0];
@@ -434,9 +340,7 @@ bool Master::run()
                 Master::assigned_shards--;
             }
             auto client = Master::workers[i].client.get();
-            //  Adds Mapper Job
-            std::cout << "Assigning Map Work of shard id " + std::to_string(s.shard_id) + " to " +
-                             Master::workers[i].worker_address
+            std::cout << "Assigning Map Work of shard id " << s.shard_id << " to " << Master::workers[i].worker_address
                       << std::endl;
 
             client->schedule_mapper_jobs(Master::mr_spec, Master::workers[i].current_shard);
@@ -452,7 +356,7 @@ bool Master::run()
             std::unique_lock<std::mutex> shards(Master::cleanup_mutex);
             if (Master::assigned_shards > 0 && !Master::missing_shards.empty())
             {
-                std::cout << "Re assigning work for " << Master::missing_shards[0].shard_id << std::endl;
+                std::cout << "Reassigning work for shard id " << Master::missing_shards[0].shard_id << std::endl;
                 Master::file_shards.clear();
                 Master::file_shards.assign(Master::missing_shards.begin(), Master::missing_shards.end());
                 Master::missing_shards.clear();
@@ -461,7 +365,7 @@ bool Master::run()
         }
     }
     map_job.join();
-    std::cout << "Map Done." << std::endl;
+    std::cout << "Map phase completed." << std::endl;
 
     for (auto &s : Master::workers)
     {
@@ -504,8 +408,7 @@ bool Master::run()
             }
             condition_cleanup_mutex.notify_one();
             auto client = Master::workers[j].client.get();
-            //  Adds Reducer Job
-            std::cout << "Assigning Reduce Work " + output_file + " to " + Master::workers[j].worker_address
+            std::cout << "Assigning Reduce Work " << output_file << " to " << Master::workers[j].worker_address
                       << std::endl;
 
             client->schedule_reduce_job(
@@ -522,9 +425,7 @@ bool Master::run()
             std::unique_lock<std::mutex> partition(Master::cleanup_mutex);
             if (Master::assigned_partition > 0 && !Master::missing_output_files.empty())
             {
-                std::cout << "Re assigning work for " + Master::mr_spec.output_directory + "/" +
-                                 std::string("output_file_")
-                          << Master::missing_output_files[0] << std::endl;
+                std::cout << "Reassigning work for output file " << Master::missing_output_files[0] << std::endl;
                 output_vector.clear();
                 output_vector.assign(Master::missing_output_files.begin(), Master::missing_output_files.end());
                 Master::missing_output_files.clear();
@@ -544,11 +445,7 @@ bool Master::run()
     cleanup_files();
     return true;
 }
-/**
- * Handles heartbeat checks
- * 1. While server is alive, sends heartbeat messages Asyncly and waits for response.
- * 2. If Response timesout or comes as dead calls cleanup. function and re assigns the work.
- */
+
 void Master::heartbeat()
 {
     while (Master::server_state)
@@ -560,7 +457,6 @@ void Master::heartbeat()
             auto c = w.client.get();
             heartbeat_payload temp_payload{};
             temp_payload.id = w.worker_address;
-            //            temp_payload.timestamp = current_time;
             if (w.workerStatus != DEAD)
             {
                 c->send_heartbeat(temp_payload.timestamp);
@@ -578,7 +474,7 @@ void Master::heartbeat()
                 bool status = c->recv_heartbeat();
                 if (!status)
                 {
-                    std::cerr << "Error " << w.worker_address << " : Dead , cleaning up" << std::endl;
+                    std::cerr << "Worker " << w.worker_address << " is dead, cleaning up" << std::endl;
                     w.workerStatus = DEAD;
                     Master::handler_dead_worker(message_queue[w.worker_address].id);
                 }
@@ -606,21 +502,14 @@ void Master::heartbeat()
     }
 }
 
-/**
- * Given worker ,Cleans up half ass work for the worker and moves the file shards or ouput files back to pool for
- * assigning to other workers
- * @param worker address/id
- */
 void Master::handler_dead_worker(std::string worker)
 {
-    std::cerr << "HANDLING DEAD WORKER......" + worker << std::endl;
+    std::cerr << "Handling dead worker: " << worker << std::endl;
     auto w = Master::find_worker_by_name(worker);
-    // Handle Mapper
     if (w->workerType == MAPPER and !ops_completed)
     {
         std::lock_guard<std::mutex> lockGuard(Master::cleanup_mutex);
         auto c = w->client.get();
-        //        unintialized....
         if (!c)
         {
             condition_ops_mutex.notify_all();
@@ -649,10 +538,7 @@ void Master::handler_dead_worker(std::string worker)
     }
     condition_ops_mutex.notify_all();
 }
-/**
- * Cleans up file if Server is alive and if there is any Dead worker in the list.
- * and also handles intermediate files cleanup during master's exit.
- */
+
 void Master::cleanup_files()
 {
     if (!Master::find_worker_by_status(DEAD).empty() && Master::server_state == ALIVE)
@@ -661,8 +547,6 @@ void Master::cleanup_files()
         {
             if (Master::workers[i].workerType == MAPPER && !Master::workers[i].dead_handled)
             {
-                // std::string(TEMP_DIR) + "/" + std::to_string(i) + "_" + MapperHandler::worker_address + ".txt"))
-
                 auto worker_port =
                     Master::workers[i].worker_address.substr(Master::workers[i].worker_address.find_first_of(':'));
 #if __cplusplus >= 201703L
@@ -702,9 +586,7 @@ void Master::cleanup_files()
 #endif
     }
 }
-/**
- * Handles Async Responses for Mapper Requests and frees worker for other work and puts data back in in the list
- */
+
 void Master::async_map()
 {
     void *tag;
@@ -722,13 +604,12 @@ void Master::async_map()
                     {
                         if (worker.worker_address == call->worker_ip_addr)
                         {
-                            std::cout << call->worker_ip_addr + " back to free." << std::endl;
+                            std::cout << call->worker_ip_addr << " is now free." << std::endl;
 
                             worker.workerStatus = FREE;
                             Master::completion_count--;
-                            std::cout << call->worker_ip_addr + " response recieved. Completion Count : " +
-                                             std::to_string(Master::completion_count) +
-                                             " Assigned Work: " + std::to_string(Master::assigned_shards)
+                            std::cout << call->worker_ip_addr << " response received. Completion Count: "
+                                      << Master::completion_count << ", Assigned Work: " << Master::assigned_shards
                                       << std::endl;
                             break;
                         }
@@ -758,9 +639,7 @@ void Master::async_map()
         delete call;
     }
 }
-/**
- * Simillar  Async_map ,  handles Reducer Responses.
- */
+
 void Master::async_reducer()
 {
     void *tag;
@@ -780,9 +659,8 @@ void Master::async_reducer()
                         {
                             worker.workerStatus = FREE;
                             Master::completion_count--;
-                            std::cout << call->worker_ip_addr + " response received. Completion Count : " +
-                                             std::to_string(Master::completion_count) +
-                                             " Assigned Work: " + std::to_string(Master::assigned_partition)
+                            std::cout << call->worker_ip_addr << " response received. Completion Count: "
+                                      << Master::completion_count << ", Assigned Work: " << Master::assigned_partition
                                       << std::endl;
                             break;
                         }
@@ -809,11 +687,7 @@ void Master::async_reducer()
         delete call;
     }
 }
-/**
- * Assigns list of intermidiate files to output files for reducing
- * @param output_id
- * @return list of intermediate files for given output id /file
- */
+
 std::vector<std::string> Master::assign_files_to_reducer(int output_id)
 {
     std::set<std::string> file_list;

@@ -8,20 +8,12 @@
 #include "file_shard.h"
 #include "masterworker.grpc.pb.h"
 #include "mr_tasks.h"
-#if __cplusplus >= 201703L
-
-#if __GNUC__ > 7 || __APPLE_CC__ > 7
 #include <filesystem>
-#elif __GNUC__ == 7 || __APPLE_CC__ == 7
-#include <experimental/filesystem>
-#endif
-#endif
+
 extern std::shared_ptr<BaseMapper> get_mapper_from_task_factory(const std::string &user_id);
 
 extern std::shared_ptr<BaseReducer> get_reducer_from_task_factory(const std::string &user_id);
-/**
- * Base Class for Three task , map , reduce and heartbeat
- */
+
 class BaseHandler
 {
 public:
@@ -44,7 +36,6 @@ protected:
     masterworker::Map_Reduce::AsyncService *service;
     grpc::ServerCompletionQueue *s_queue;
     std::string worker_address;
-    // State engine used from GRPC default example for Async Server.
     grpc::ServerContext ctx_;
     enum CallStatus
     {
@@ -54,18 +45,10 @@ protected:
     };
     CallStatus status_;
 };
-/**
- * Mapper Class
- */
+
 class MapperHandler final : BaseHandler
 {
 public:
-    /**
-     * Constructor for Mapper Class which inits class
-     * @param service
-     * @param pQueue
-     * @param basicString
-     */
     MapperHandler(
         masterworker::Map_Reduce::AsyncService *service,
         grpc::ServerCompletionQueue *pQueue,
@@ -106,18 +89,10 @@ private:
     BaseMapperInternal *get_basemapper_internal(BaseMapper *mapper);
     FileShard convert_grpc_spec(masterworker::partition partition);
 };
-/**
- * Reducer Class
- */
+
 class ReducerHandler final : BaseHandler
 {
 public:
-    /**
-     * Constructor for Reducer
-     * @param service
-     * @param pQueue
-     * @param basicString
-     */
     ReducerHandler(
         masterworker::Map_Reduce::AsyncService *service,
         grpc::ServerCompletionQueue *pQueue,
@@ -157,18 +132,10 @@ private:
 
     BaseReducerInternal *get_basereducer_internal(BaseReducer *reducer);
 };
-/**
- * Heartbeat class
- */
+
 class HeartbeatHandler final : BaseHandler
 {
 public:
-    /**
-     * Constructor for Heartbeat class
-     * @param service
-     * @param pQueue
-     * @param basicString
-     */
     HeartbeatHandler(
         masterworker::Map_Reduce::AsyncService *service,
         grpc::ServerCompletionQueue *pQueue,
@@ -206,18 +173,12 @@ private:
     masterworker::Heartbeat_Payload handle_heartbeat_job(masterworker::Heartbeat_Payload request);
 };
 
-/**
- * CS6210_TASK: Handle all the task a Worker is supposed to do.
- * This is a big task for this project, will test your understanding of mapreduce
- * */
 class Worker
 {
 
 public:
-    /* DON'T change the function signature of this constructor */
     Worker(std::string ip_addr_port);
 
-    /* DON'T change this function's signature */
     bool run();
 
     ~Worker()
@@ -237,8 +198,6 @@ public:
     }
 
 private:
-    /* NOW you can add below, data members and member functions as per the need of
-     * your implementation*/
     grpc::ServerBuilder builder;
     std::unique_ptr<grpc::ServerCompletionQueue> work_queue;
     std::unique_ptr<grpc::ServerCompletionQueue> heartbeat_queue;
@@ -251,14 +210,9 @@ private:
     bool clean_exit = false;
 };
 
-/**
- * ip_addr_port is the only information you get when started.
- * You can populate your other class data members here if you want
- * @param ip_addr_port
- */
 inline Worker::Worker(std::string ip_addr_port)
 {
-    std::cout << "listening on " << ip_addr_port << std::endl;
+    std::cout << "Listening on " << ip_addr_port << std::endl;
     Worker::builder.AddListeningPort(ip_addr_port, grpc::InsecureServerCredentials());
     Worker::builder.RegisterService(&this->mapreduce_service);
     Worker::work_queue = Worker::builder.AddCompletionQueue();
@@ -266,15 +220,6 @@ inline Worker::Worker(std::string ip_addr_port)
     Worker::worker_uuid = ip_addr_port.substr(ip_addr_port.find_first_of(':') + 1);
 }
 
-/**
- * Here you go. once this function is called your woker's job is to
- * keep looking for new tasks from Master, complete when given one and again
- * keep looking for the next one. Note that you have the access to BaseMapper's
- * member BaseMapperInternal impl_ and BaseReduer's member BaseReducerInternal
- * impl_ directly, so you can manipulate them however you want when running
- * map/reduce tasks
- * @return
- */
 inline bool Worker::run()
 {
     void *tag;
@@ -291,10 +236,7 @@ inline bool Worker::run()
     }
     return true;
 }
-/**
- * Heartbeat handler , recives heartbeat request and send them back with same values and ALIVE state,
- * unless clean_exit is marked true.
- */
+
 inline void Worker::heartbeat_handler()
 {
     void *tag;
@@ -311,11 +253,7 @@ inline void Worker::heartbeat_handler()
         static_cast<BaseHandler *>(tag)->Proceed();
     }
 }
-/**
- * Conver grpc payload to FileShard.
- * @param partition
- * @return FileShard struct equivalent  of gprc partition payload.
- */
+
 FileShard MapperHandler::convert_grpc_spec(masterworker::partition partition)
 {
     FileShard shard{};
@@ -329,12 +267,7 @@ FileShard MapperHandler::convert_grpc_spec(masterworker::partition partition)
     }
     return shard;
 }
-/**
- * Given GRPC Map request , Select intermedidate file. usually TEMP_DIR/<partition_count>_<worker_port>.txt
- * Reads shard files and apply user defined map function on it.
- * @param request grpc Map Request , check .proto
- * @return grpc Map Response payload , check .proto
- */
+
 inline masterworker::Map_Response MapperHandler::handle_mapper_job(masterworker::Map_Request request)
 {
     masterworker::Map_Response payload;
@@ -358,7 +291,7 @@ inline masterworker::Map_Response MapperHandler::handle_mapper_job(masterworker:
             std::ifstream f(i.filename, std::ios::binary);
             if (!f.good())
             {
-                std::cerr << i.filename << " not open...." << std::endl;
+                std::cerr << "Error opening file: " << i.filename << std::endl;
             }
 
             f.seekg(i.offsets.first);
@@ -379,11 +312,7 @@ inline masterworker::Map_Response MapperHandler::handle_mapper_job(masterworker:
 
     return payload;
 }
-/**
- * Given GRPC Reduce request , Given output file , runs user defined reduce function and emits output data.
- * @param request grpc Reduce Request , check .proto
- * @return grpc Reduce Response payload , check .proto
- */
+
 inline masterworker::Reduce_Response ReducerHandler::handle_reducer_job(masterworker::Reduce_Request request)
 {
     masterworker::Reduce_Response payload;
@@ -410,7 +339,7 @@ inline masterworker::Reduce_Response ReducerHandler::handle_reducer_job(masterwo
         }
         catch (std::ifstream::failure &e)
         {
-            std::cerr << f + "  Error: " + e.what() << std::endl;
+            std::cerr << "Error reading file " << f << ": " << e.what() << std::endl;
         }
     }
     for (const auto &k : key_value_map)
@@ -420,11 +349,7 @@ inline masterworker::Reduce_Response ReducerHandler::handle_reducer_job(masterwo
     key_value_map.clear();
     return payload;
 }
-/**
- * Handles Heartbeat request and return heartbeat payload
- * @param request Heartbeat payload check .proto
- * @return Heartbeat payload
- */
+
 inline masterworker::Heartbeat_Payload HeartbeatHandler::handle_heartbeat_job(masterworker::Heartbeat_Payload request)
 {
     masterworker::Heartbeat_Payload payload;
@@ -433,20 +358,12 @@ inline masterworker::Heartbeat_Payload HeartbeatHandler::handle_heartbeat_job(ma
         payload.set_status(masterworker::Heartbeat_Payload_type_ALIVE);
     return payload;
 }
-/**
- *
- * @param reducer
- * @return BaseReducerinternal Class
- */
+
 inline BaseReducerInternal *ReducerHandler::get_basereducer_internal(BaseReducer *reducer)
 {
     return Worker::get_basereducer_internal(reducer);
 }
-/**
- *
- * @param mapper
- * @return BaseMapperinternal Class
- */
+
 inline BaseMapperInternal *MapperHandler::get_basemapper_internal(BaseMapper *mapper)
 {
     return Worker::get_basemapper_internal(mapper);
