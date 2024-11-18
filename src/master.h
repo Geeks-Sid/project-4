@@ -7,62 +7,75 @@
 #include <thread>
 #include <unistd.h>
 #include <utility>
-#include <filesystem>
 
 #include "file_shard.h"
 #include "mapreduce_spec.h"
 #include "masterworker.grpc.pb.h"
+#if __cplusplus >= 201703L
 
+#if __GNUC__ > 7 || __APPLE_CC__ > 7
+#include <filesystem>
+#elif __GNUC__ == 7 || __APPLE_CC__ == 7
+#include <experimental/filesystem>
+#endif
+#endif
 #define ALIVE true
+
 #define TIMEOUT 5
 
-namespace fs = std::filesystem;
-
-enum WorkerStatus
+enum WORKER_STATUS
 {
     FREE,
     BUSY,
     DEAD
 };
-
-enum WorkerType
+enum WORKER_TYPE
 {
     MAPPER,
     REDUCER
 };
-
-struct HeartbeatPayload
+struct heartbeat_payload
 {
     std::string id;
     std::int64_t timestamp;
-    WorkerStatus status;
+    WORKER_STATUS workerStatus;
 };
 
+/**
+ * Base Class to handle all Async Response.
+ */
 class AsyncClientCall
 {
 public:
-    bool isMapJob = true;
+    bool is_map_job = true;
     grpc::ClientContext context;
     grpc::Status status;
-    std::string workerIpAddr;
+    std::string worker_ip_addr;
 
     virtual ~AsyncClientCall() = default;
 };
 
+/**
+ * Handles Async Map Response.
+ */
 class MapCall : public AsyncClientCall
 {
 public:
     masterworker::Map_Response result;
-    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Map_Response>> mapResponseReader;
+    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Map_Response>> map_response_reader;
 };
-
+/**
+ * Handles Async Reduce Response.
+ */
 class ReduceCall : public AsyncClientCall
 {
 public:
     masterworker::Reduce_Response result;
-    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Reduce_Response>> reduceResponseReader;
+    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Reduce_Response>> reducer_response_reader;
 };
-
+/**
+ * Handles Async heartbeat Response.
+ */
 class HeartbeatCall : public AsyncClientCall
 {
 public:

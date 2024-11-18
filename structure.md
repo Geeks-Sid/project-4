@@ -62,3 +62,6 @@ We are describing here only the files which you are supposed to work on. For the
   - Then start your main map reduce process: `./mrdemo config.ini`
   - Once the `./mrdemo` finishes, kill all the worker proccesses you started.
   - Check output directory to see if you have the correct results(obviously once you have done the proper implementation of your library).
+
+
+You are only allowed to change the following files `masterworker.proto`, `file_shard.h`, `mapreduce_spec.h`, `master.h`, `mr_tasks.h`, `worker.h`
