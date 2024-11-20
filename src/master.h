@@ -1,6 +1,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <filesystem>
 #include <grpcpp/grpcpp.h>
 #include <memory>
 #include <numeric>
@@ -12,696 +13,658 @@
 #include "mapreduce_spec.h"
 #include "masterworker.grpc.pb.h"
 
-#include <filesystem>
 namespace fs = std::filesystem;
 
-#define ALIVE true
-#define TIMEOUT 5
+constexpr bool SERVER_ALIVE = true;
+constexpr int HEARTBEAT_TIMEOUT = 5;
+constexpr const char *TEMP_DIRECTORY = "intermediate";
 
-enum WORKER_STATUS
+enum class WorkerStatus
 {
     FREE,
     BUSY,
     DEAD
 };
 
-enum WORKER_TYPE
+enum class WorkerType
 {
     MAPPER,
     REDUCER
 };
 
-struct heartbeat_payload
+struct HeartbeatPayload
 {
     std::string id;
-    std::int64_t timestamp;
-    WORKER_STATUS workerStatus;
+    int64_t timestamp;
+    WorkerStatus status;
 };
 
-class AsyncClientCall
+class AsyncCall
 {
 public:
-    bool is_map_job = true;
+    bool isMapJob = true;
     grpc::ClientContext context;
     grpc::Status status;
-    std::string worker_ip_addr;
+    std::string workerAddress;
 
-    virtual ~AsyncClientCall() = default;
+    virtual ~AsyncCall() = default;
 };
 
-class MapCall : public AsyncClientCall
+class MapCall : public AsyncCall
 {
 public:
     masterworker::Map_Response result;
-    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Map_Response>> map_response_reader;
+    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Map_Response>> responseReader;
 };
 
-class ReduceCall : public AsyncClientCall
+class ReduceCall : public AsyncCall
 {
 public:
     masterworker::Reduce_Response result;
-    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Reduce_Response>> reducer_response_reader;
+    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Reduce_Response>> responseReader;
 };
 
-class HeartbeatCall : public AsyncClientCall
+class HeartbeatCall : public AsyncCall
 {
 public:
     masterworker::Heartbeat_Payload result;
-    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Heartbeat_Payload>> heartbeat_payload_reader;
+    std::unique_ptr<grpc::ClientAsyncResponseReader<masterworker::Heartbeat_Payload>> responseReader;
 };
 
 class WorkerClient
 {
 public:
     WorkerClient(const std::string &address, grpc::CompletionQueue *queue);
+    ~WorkerClient();
 
-    void send_heartbeat(int64_t current_time);
+    void sendHeartbeat(int64_t currentTime);
+    bool receiveHeartbeat();
 
-    bool recv_heartbeat();
-
-    void schedule_reduce_job(const MapReduceSpec &spec, const std::vector<std::string> &file_list, const std::string &output_file_location);
-
-    void schedule_mapper_jobs(const MapReduceSpec &spec, const FileShard &shard);
-
-    ~WorkerClient()
-    {
-        heartbeat_queue->Shutdown();
-    }
+    void scheduleMapJob(const MapReduceSpec &spec, const FileShard &shard);
+    void scheduleReduceJob(const MapReduceSpec &spec, const std::vector<std::string> &fileList, const std::string &outputFile);
 
 private:
-    std::unique_ptr<masterworker::Map_Reduce::Stub> stub;
-    grpc::CompletionQueue *queue;
-    std::string worker_address;
-    grpc::CompletionQueue *heartbeat_queue;
+    void convertToGrpcSpec(const FileShard &shard, masterworker::partition *partition);
 
-    void convert_grpc_spec(const FileShard *shard, masterworker::partition *partition);
+    std::unique_ptr<masterworker::Map_Reduce::Stub> stub_;
+    grpc::CompletionQueue *queue_;
+    grpc::CompletionQueue heartbeatQueue_;
+    std::string workerAddress_;
 };
 
 WorkerClient::WorkerClient(const std::string &address, grpc::CompletionQueue *queue)
-    : queue(queue), worker_address(address)
+    : queue_(queue), workerAddress_(address)
 {
     std::cout << "Creating channel at " << address << std::endl;
-    heartbeat_queue = new grpc::CompletionQueue();
-    this->stub = masterworker::Map_Reduce::NewStub(grpc::CreateChannel(address, grpc::InsecureChannelCredentials()));
+    stub_ = masterworker::Map_Reduce::NewStub(grpc::CreateChannel(address, grpc::InsecureChannelCredentials()));
 }
 
-void WorkerClient::send_heartbeat(std::int64_t current_time)
+WorkerClient::~WorkerClient()
 {
-    std::chrono::system_clock::time_point deadline = std::chrono::system_clock::now() + std::chrono::seconds(TIMEOUT);
+    heartbeatQueue_.Shutdown();
+}
+
+void WorkerClient::sendHeartbeat(int64_t currentTime)
+{
+    auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(HEARTBEAT_TIMEOUT);
     auto call = new HeartbeatCall;
-    call->worker_ip_addr = this->worker_address;
+    call->workerAddress = workerAddress_;
     call->context.set_deadline(deadline);
     masterworker::Heartbeat_Payload payload;
-    payload.set_id(this->worker_address);
-    payload.set_status(masterworker::Heartbeat_Payload_type_UNKNOWN);
-    call->heartbeat_payload_reader =
-        WorkerClient::stub->PrepareAsyncheartbeat(&call->context, payload, WorkerClient::heartbeat_queue);
-    call->heartbeat_payload_reader->StartCall();
-    call->heartbeat_payload_reader->Finish(&call->result, &call->status, (void *)call);
+    payload.set_id(workerAddress_);
+    payload.set_status(masterworker::Heartbeat_Payload::UNKNOWN);
+    call->responseReader = stub_->PrepareAsyncheartbeat(&call->context, payload, &heartbeatQueue_);
+    call->responseReader->StartCall();
+    call->responseReader->Finish(&call->result, &call->status, (void *)call);
 }
 
-bool WorkerClient::recv_heartbeat()
+bool WorkerClient::receiveHeartbeat()
 {
     void *tag;
     bool ok = false;
-    GPR_ASSERT(WorkerClient::heartbeat_queue->Next(&tag, &ok));
+    GPR_ASSERT(heartbeatQueue_.Next(&tag, &ok));
     auto *call = static_cast<HeartbeatCall *>(tag);
     if (call->status.ok())
     {
-        if (call->result.status() == masterworker::Heartbeat_Payload_type_DEAD)
+        if (call->result.status() == masterworker::Heartbeat_Payload::DEAD)
         {
-            std::cerr << "Worker " << call->worker_ip_addr << " is dead" << std::endl;
+            std::cerr << "Error Code 401: Worker " << call->workerAddress << " reported as dead." << std::endl;
+            delete call;
             return false;
         }
         delete call;
         return true;
     }
-    std::cerr << "Error with worker " << this->worker_address << ": " << call->status.error_message()
-              << ", details: " << call->status.error_details() << ", status code: " << call->status.error_code()
-              << ", ok: " << call->status.ok() << std::endl;
-    return false;
-}
-
-void WorkerClient::schedule_reduce_job(
-    const MapReduceSpec &spec,
-    const std::vector<std::string> &file_list,
-    const std::string &output_file_location)
-{
-    masterworker::Reduce_Request reduceRequest;
-    reduceRequest.set_uuid(spec.username);
-    reduceRequest.set_output_file(output_file_location);
-    for (const auto &l : file_list)
+    else
     {
-        auto f = reduceRequest.add_file_list();
-        f->append(l);
-    }
-    auto call = new ReduceCall;
-    call->worker_ip_addr = this->worker_address;
-    call->reducer_response_reader =
-        WorkerClient::stub->PrepareAsyncreduce(&call->context, reduceRequest, WorkerClient::queue);
-    call->is_map_job = false;
-    call->reducer_response_reader->StartCall();
-    call->reducer_response_reader->Finish(&call->result, &call->status, (void *)call);
-}
-
-void WorkerClient::convert_grpc_spec(const FileShard *shard, masterworker::partition *partition)
-{
-    partition->set_shard_id(shard->shard_id);
-    for (const auto &f : shard->segments)
-    {
-        auto temp = partition->add_file_list();
-        temp->set_filename(f.filename);
-        temp->set_start_offset(f.offsets.first);
-        temp->set_end_offset(f.offsets.second);
+        std::cerr << "Error Code 402: Heartbeat error with worker " << workerAddress_
+                  << ": " << call->status.error_message() << std::endl;
+        delete call;
+        return false;
     }
 }
 
-void WorkerClient::schedule_mapper_jobs(const MapReduceSpec &spec, const FileShard &shard)
+void WorkerClient::scheduleMapJob(const MapReduceSpec &spec, const FileShard &shard)
 {
-    masterworker::Map_Request mapRequest;
-    mapRequest.set_uuid(spec.username);
-    mapRequest.set_partition_count(spec.num_output_files);
-    auto s = mapRequest.add_shard();
-    this->convert_grpc_spec(&shard, s);
+    masterworker::Map_Request request;
+    request.set_uuid(spec.username);
+    request.set_partition_count(spec.num_output_files);
+    auto *partition = request.add_shard();
+    convertToGrpcSpec(shard, partition);
+
     auto call = new MapCall;
-    call->worker_ip_addr = this->worker_address;
-    call->map_response_reader = WorkerClient::stub->PrepareAsyncmap(&call->context, mapRequest, WorkerClient::queue);
-    call->is_map_job = true;
-    call->map_response_reader->StartCall();
-    call->map_response_reader->Finish(&call->result, &call->status, (void *)call);
+    call->workerAddress = workerAddress_;
+    call->isMapJob = true;
+    call->responseReader = stub_->PrepareAsyncmap(&call->context, request, queue_);
+    call->responseReader->StartCall();
+    call->responseReader->Finish(&call->result, &call->status, (void *)call);
 }
 
-struct worker
+void WorkerClient::scheduleReduceJob(const MapReduceSpec &spec, const std::vector<std::string> &fileList, const std::string &outputFile)
 {
-    std::string worker_address;
-    WORKER_STATUS workerStatus;
-    WORKER_TYPE workerType;
-    FileShard current_shard;
+    masterworker::Reduce_Request request;
+    request.set_uuid(spec.username);
+    request.set_output_file(outputFile);
+    for (const auto &file : fileList)
+    {
+        request.add_file_list(file);
+    }
+
+    auto call = new ReduceCall;
+    call->workerAddress = workerAddress_;
+    call->isMapJob = false;
+    call->responseReader = stub_->PrepareAsyncreduce(&call->context, request, queue_);
+    call->responseReader->StartCall();
+    call->responseReader->Finish(&call->result, &call->status, (void *)call);
+}
+
+void WorkerClient::convertToGrpcSpec(const FileShard &shard, masterworker::partition *partition)
+{
+    partition->set_shard_id(shard.shard_id);
+    for (const auto &segment : shard.segments)
+    {
+        auto *file = partition->add_file_list();
+        file->set_filename(segment.filename);
+        file->set_start_offset(segment.offsets.first);
+        file->set_end_offset(segment.offsets.second);
+    }
+}
+
+struct Worker
+{
+    std::string address;
+    WorkerStatus status;
+    WorkerType type;
+    FileShard currentShard;
     std::shared_ptr<WorkerClient> client;
-    std::map<std::string, std::vector<std::string>> output_reducer_location_map;
-    int current_output;
-    bool dead_handled = false;
+    std::map<std::string, std::vector<std::string>> outputFiles;
+    int currentOutput;
+    bool deadHandled = false;
 };
 
 class Master
 {
-
 public:
-    Master(const MapReduceSpec &, const std::vector<FileShard> &);
+    Master(const MapReduceSpec &spec, const std::vector<FileShard> &shards);
+    ~Master();
 
     bool run();
-    ~Master()
-    {
-        Master::server_state = !ALIVE;
-        Master::cq_->Shutdown();
-        cleanup_files();
-    }
 
 private:
-    grpc::CompletionQueue *cq_;
-    bool server_state = ALIVE;
+    Worker *findWorkerByName(const std::string &name);
+    std::vector<int> findWorkersByStatus(WorkerStatus status);
 
-    MapReduceSpec mr_spec;
-
-    worker dummy{};
-    std::vector<struct worker> workers{};
-    std::mutex worker_queue_mutex;
-    std::condition_variable condition_worker_queue_mutex;
-    worker *find_worker_by_name(const std::string &t);
-    std::vector<int> find_worker_by_status(WORKER_STATUS t);
-
-    bool init_heartbeat = true;
-    std::mutex heartbeat_mutex;
-    std::condition_variable condition_heartbeat;
     void heartbeat();
-    void handler_dead_worker(const std::string &worker);
+    void handleDeadWorker(const std::string &workerName);
+    void cleanupFiles();
 
-    std::mutex cleanup_mutex;
-    std::condition_variable condition_cleanup_mutex;
-    void cleanup_files();
+    void asyncMap();
+    void asyncReduce();
+    std::vector<std::string> assignFilesToReducer(int outputId);
 
-    int completion_count;
-    bool ops_completed = false;
-    std::mutex ops_mutex;
-    std::condition_variable condition_ops_mutex;
+    grpc::CompletionQueue *completionQueue_;
+    bool serverState_ = SERVER_ALIVE;
 
-    int assigned_shards;
-    std::vector<FileShard> file_shards;
-    std::vector<FileShard> missing_shards;
-    std::vector<std::string> intermidateFiles;
-    void async_map();
+    MapReduceSpec spec_;
 
-    int assigned_partition;
-    std::vector<std::string> OutputFiles;
-    std::vector<int> missing_output_files;
-    void async_reducer();
-    std::vector<std::string> assign_files_to_reducer(int output_id);
+    Worker dummyWorker_;
+    std::vector<Worker> workers_;
+    std::mutex workerMutex_;
+    std::condition_variable workerCondition_;
+
+    bool heartbeatInitialized_ = true;
+    std::mutex heartbeatMutex_;
+    std::condition_variable heartbeatCondition_;
+
+    std::mutex cleanupMutex_;
+    std::condition_variable cleanupCondition_;
+
+    int completionCount_;
+    bool operationsCompleted_ = false;
+    std::mutex operationsMutex_;
+    std::condition_variable operationsCondition_;
+
+    int assignedShards_;
+    std::vector<FileShard> fileShards_;
+    std::vector<FileShard> missingShards_;
+    std::vector<std::string> intermediateFiles_;
+
+    int assignedPartitions_;
+    std::vector<std::string> outputFiles_;
+    std::vector<int> missingOutputs_;
 };
 
-std::vector<int> Master::find_worker_by_status(WORKER_STATUS t)
+Master::Master(const MapReduceSpec &spec, const std::vector<FileShard> &shards)
+    : spec_(spec), fileShards_(shards)
 {
-    std::vector<int> temp;
-    for (int i = 0; i < Master::workers.size(); i++)
+    completionQueue_ = new grpc::CompletionQueue();
+    for (const auto &address : spec_.worker_addresses)
     {
-        if (Master::workers[i].workerStatus == t)
-        {
-            temp.push_back(i);
-        }
+        dummyWorker_.address = address;
+        dummyWorker_.status = WorkerStatus::FREE;
+        dummyWorker_.type = WorkerType::MAPPER;
+        dummyWorker_.client = std::make_shared<WorkerClient>(address, completionQueue_);
+        workers_.push_back(dummyWorker_);
     }
-    return temp;
 }
 
-worker *Master::find_worker_by_name(const std::string &t)
+Master::~Master()
 {
-    for (auto &w : Master::workers)
+    serverState_ = !SERVER_ALIVE;
+    completionQueue_->Shutdown();
+    cleanupFiles();
+}
+
+Worker *Master::findWorkerByName(const std::string &name)
+{
+    for (auto &worker : workers_)
     {
-        if (w.worker_address == t)
-            return &w;
+        if (worker.address == name)
+        {
+            return &worker;
+        }
     }
-    std::cerr << "Worker " << t << " not found" << std::endl;
+    std::cerr << "Error Code 501: Worker " << name << " not found." << std::endl;
     return nullptr;
 }
 
-Master::Master(const MapReduceSpec &mr_spec, const std::vector<FileShard> &file_shards)
-    : mr_spec(mr_spec), file_shards(file_shards)
+std::vector<int> Master::findWorkersByStatus(WorkerStatus status)
 {
-    cq_ = new grpc::CompletionQueue();
-    for (const auto &i : Master::mr_spec.worker_addresses)
+    std::vector<int> indices;
+    for (size_t i = 0; i < workers_.size(); ++i)
     {
-        dummy.worker_address = i;
-        dummy.workerStatus = FREE;
-        dummy.workerType = MAPPER;
-        dummy.client = std::make_shared<WorkerClient>(i, Master::cq_);
-        Master::workers.push_back(dummy);
-    }
-}
-
-bool Master::run()
-{
-    std::thread check_heartbeat_status(&Master::heartbeat, this);
-#if __cplusplus >= 201703L
-    fs::create_directory(TEMP_DIR);
-    if (fs::is_directory(Master::mr_spec.output_dir))
-    {
-        for (const auto &fi : fs::directory_iterator(Master::mr_spec.output_dir))
+        if (workers_[i].status == status)
         {
-            fs::remove(fi.path());
+            indices.push_back(static_cast<int>(i));
         }
     }
-#else
-    auto dir_string = std::string("rm -rf ") + std::string(TEMP_DIR);
-    system(dir_string.c_str());
-    mkdir(TEMP_DIR, 0755);
-#endif
-
-    std::thread map_job(&Master::async_map, this);
-    {
-        std::unique_lock<std::mutex> lock_heartbeat(heartbeat_mutex);
-        Master::init_heartbeat = true;
-        condition_heartbeat.wait(lock_heartbeat, [this]
-                                 { return !this->init_heartbeat; });
-    }
-    bool shards_done = false;
-    Master::completion_count = Master::assigned_shards = Master::file_shards.size();
-    while (!shards_done)
-    {
-        for (const auto &s : Master::file_shards)
-        {
-            int i;
-            {
-                std::unique_lock<std::mutex> shards(Master::cleanup_mutex);
-                condition_cleanup_mutex.wait(shards, [this]
-                                             { return !Master::find_worker_by_status(FREE).empty(); });
-                i = Master::find_worker_by_status(FREE)[0];
-                if (Master::workers[i].workerStatus == DEAD)
-                {
-                    continue;
-                }
-                Master::workers[i].current_shard = s;
-                Master::workers[i].workerStatus = BUSY;
-                Master::assigned_shards--;
-            }
-            auto client = Master::workers[i].client.get();
-            std::cout << "Assigning Map Work of shard id " << s.shard_id << " to " << Master::workers[i].worker_address
-                      << std::endl;
-
-            client->schedule_mapper_jobs(Master::mr_spec, Master::workers[i].current_shard);
-        }
-        {
-            std::unique_lock<std::mutex> work_done(ops_mutex);
-            condition_ops_mutex.wait(work_done);
-            if (assigned_shards <= 0 && ops_completed)
-                shards_done = true;
-        }
-
-        {
-            std::unique_lock<std::mutex> shards(Master::cleanup_mutex);
-            if (Master::assigned_shards > 0 && !Master::missing_shards.empty())
-            {
-                std::cout << "Reassigning work for shard id " << Master::missing_shards[0].shard_id << std::endl;
-                Master::file_shards.clear();
-                Master::file_shards.assign(Master::missing_shards.begin(), Master::missing_shards.end());
-                Master::missing_shards.clear();
-                condition_cleanup_mutex.notify_one();
-            }
-        }
-    }
-    map_job.join();
-    std::cout << "Map phase completed." << std::endl;
-
-    for (auto &s : Master::workers)
-    {
-        if (s.workerStatus == DEAD)
-            continue;
-        s.workerStatus = FREE;
-        s.workerType = REDUCER;
-    }
-    ops_completed = false;
-
-    std::thread reduce_job(&Master::async_reducer, this);
-
-    bool partition_done = false;
-    Master::completion_count = Master::assigned_partition = Master::mr_spec.num_output_files;
-    std::vector<int> output_vector(Master::assigned_partition);
-    std::iota(output_vector.begin(), output_vector.end(), 0);
-    while (!partition_done && Master::assigned_partition > 0)
-    {
-        for (auto &i : output_vector)
-        {
-            int j;
-            std::string output_file;
-            {
-                std::unique_lock<std::mutex> partition(Master::cleanup_mutex);
-                condition_cleanup_mutex.wait(
-                    partition, [this]
-                    { return !Master::find_worker_by_status(FREE).empty(); });
-                j = Master::find_worker_by_status(FREE)[0];
-                if (Master::workers[j].workerStatus == DEAD)
-                {
-                    continue;
-                }
-                Master::workers[j].workerType = REDUCER;
-                output_file =
-                    Master::mr_spec.output_dir + "/" + std::string("output_file_").append(std::to_string(i));
-                Master::workers[j].output_reducer_location_map[output_file] = assign_files_to_reducer(i);
-                Master::workers[j].current_output = i;
-                Master::workers[j].workerStatus = BUSY;
-                Master::assigned_partition--;
-            }
-            condition_cleanup_mutex.notify_one();
-            auto client = Master::workers[j].client.get();
-            std::cout << "Assigning Reduce Work " << output_file << " to " << Master::workers[j].worker_address
-                      << std::endl;
-
-            client->schedule_reduce_job(
-                Master::mr_spec, Master::workers[j].output_reducer_location_map[output_file], output_file);
-        }
-        {
-            std::unique_lock<std::mutex> work_done(ops_mutex);
-            condition_ops_mutex.wait(work_done);
-            if (Master::assigned_partition <= 0 && ops_completed)
-                partition_done = true;
-        }
-
-        {
-            std::unique_lock<std::mutex> partition(Master::cleanup_mutex);
-            if (Master::assigned_partition > 0 && !Master::missing_output_files.empty())
-            {
-                std::cout << "Reassigning work for output file " << Master::missing_output_files[0] << std::endl;
-                output_vector.clear();
-                output_vector.assign(Master::missing_output_files.begin(), Master::missing_output_files.end());
-                Master::missing_output_files.clear();
-                condition_cleanup_mutex.notify_one();
-            }
-        }
-    }
-
-    reduce_job.join();
-
-    {
-        std::unique_lock<std::mutex> heartbeat(Master::heartbeat_mutex);
-        Master::server_state = !ALIVE;
-        condition_heartbeat.notify_all();
-    }
-    check_heartbeat_status.join();
-    cleanup_files();
-    return true;
+    return indices;
 }
 
 void Master::heartbeat()
 {
-    while (Master::server_state)
+    while (serverState_)
     {
-        std::map<std::string, heartbeat_payload> message_queue;
-        auto current_time = std::chrono::system_clock::now().time_since_epoch().count();
-        for (const auto &w : Master::workers)
+        std::map<std::string, HeartbeatPayload> heartbeatMessages;
+        auto currentTime = std::chrono::system_clock::now().time_since_epoch().count();
+
+        for (const auto &worker : workers_)
         {
-            auto c = w.client.get();
-            heartbeat_payload temp_payload{};
-            temp_payload.id = w.worker_address;
-            if (w.workerStatus != DEAD)
+            auto client = worker.client.get();
+            HeartbeatPayload payload;
+            payload.id = worker.address;
+            if (worker.status != WorkerStatus::DEAD)
             {
-                c->send_heartbeat(temp_payload.timestamp);
-                message_queue[w.worker_address] = temp_payload;
+                client->sendHeartbeat(payload.timestamp);
+                heartbeatMessages[worker.address] = payload;
             }
         }
 
-        for (auto &w : this->workers)
+        for (auto &worker : workers_)
         {
-            auto c = w.client.get();
-            if (!c)
-                continue;
-            if (w.workerStatus != DEAD)
+            auto client = worker.client.get();
+            if (worker.status != WorkerStatus::DEAD)
             {
-                bool status = c->recv_heartbeat();
-                if (!status)
+                bool alive = client->receiveHeartbeat();
+                if (!alive)
                 {
-                    std::cerr << "Worker " << w.worker_address << " is dead, cleaning up" << std::endl;
-                    w.workerStatus = DEAD;
-                    Master::handler_dead_worker(message_queue[w.worker_address].id);
+                    std::cerr << "Error Code 403: Worker " << worker.address << " is dead, initiating cleanup." << std::endl;
+                    worker.status = WorkerStatus::DEAD;
+                    handleDeadWorker(worker.address);
                 }
             }
         }
 
-        if (init_heartbeat)
+        if (heartbeatInitialized_)
         {
             {
-                std::unique_lock<std::mutex> heartbeat_lock(Master::heartbeat_mutex);
-                init_heartbeat = false;
-                condition_heartbeat.notify_one();
+                std::lock_guard<std::mutex> lock(heartbeatMutex_);
+                heartbeatInitialized_ = false;
+                heartbeatCondition_.notify_one();
             }
         }
 
-        auto end_time = std::chrono::system_clock::now().time_since_epoch().count();
-
-        if (end_time - current_time < 1000 * 1000)
+        auto endTime = std::chrono::system_clock::now().time_since_epoch().count();
+        if (endTime - currentTime < 1000000)
         {
-            std::unique_lock<std::mutex> heartbeat_lock(Master::heartbeat_mutex);
+            std::unique_lock<std::mutex> lock(heartbeatMutex_);
             sleep(1);
-            condition_heartbeat.wait_for(heartbeat_lock, std::chrono::milliseconds(5 * 1000), [this]
+            heartbeatCondition_.wait_for(lock, std::chrono::milliseconds(5000), []
                                          { return true; });
         }
     }
 }
 
-void Master::handler_dead_worker(const std::string &worker)
+void Master::handleDeadWorker(const std::string &workerName)
 {
-    std::cerr << "Handling dead worker: " << worker << std::endl;
-    auto w = Master::find_worker_by_name(worker);
-    if (w->workerType == MAPPER and !ops_completed)
+    std::cerr << "Error Code 404: Handling dead worker: " << workerName << std::endl;
+    auto worker = findWorkerByName(workerName);
+    if (!worker)
+        return;
+
+    std::lock_guard<std::mutex> lock(cleanupMutex_);
+    if (worker->type == WorkerType::MAPPER && !operationsCompleted_)
     {
-        std::lock_guard<std::mutex> lockGuard(Master::cleanup_mutex);
-        auto c = w->client.get();
-        if (!c)
-        {
-            condition_ops_mutex.notify_all();
-            return;
-        }
-        Master::missing_shards.push_back(w->current_shard);
-        Master::assigned_shards++;
-        w->workerStatus = DEAD;
-        Master::cleanup_files();
-        condition_cleanup_mutex.notify_one();
+        missingShards_.push_back(worker->currentShard);
+        assignedShards_++;
+        worker->status = WorkerStatus::DEAD;
+        cleanupFiles();
+        cleanupCondition_.notify_one();
     }
-    else
+    else if (worker->type == WorkerType::REDUCER)
     {
-        std::lock_guard<std::mutex> lockGuard(Master::cleanup_mutex);
-        auto c = w->client.get();
-        if (!c)
-        {
-            condition_ops_mutex.notify_all();
-            return;
-        }
-        Master::missing_output_files.push_back(w->current_output);
-        Master::assigned_partition++;
-        w->workerStatus = DEAD;
-        Master::cleanup_files();
-        condition_cleanup_mutex.notify_one();
+        missingOutputs_.push_back(worker->currentOutput);
+        assignedPartitions_++;
+        worker->status = WorkerStatus::DEAD;
+        cleanupFiles();
+        cleanupCondition_.notify_one();
     }
-    condition_ops_mutex.notify_all();
+    operationsCondition_.notify_all();
 }
 
-void Master::cleanup_files()
+void Master::cleanupFiles()
 {
-    if (!Master::find_worker_by_status(DEAD).empty() && Master::server_state == ALIVE)
+    if (!findWorkersByStatus(WorkerStatus::DEAD).empty() && serverState_ == SERVER_ALIVE)
     {
-        for (auto i : Master::find_worker_by_status(DEAD))
+        for (int index : findWorkersByStatus(WorkerStatus::DEAD))
         {
-            if (Master::workers[i].workerType == MAPPER && !Master::workers[i].dead_handled)
+            auto &worker = workers_[index];
+            if (worker.type == WorkerType::MAPPER && !worker.deadHandled)
             {
-                auto worker_port =
-                    Master::workers[i].worker_address.substr(Master::workers[i].worker_address.find_first_of(':'));
-#if __cplusplus >= 201703L
-                for (auto f : fs::directory_iterator(TEMP_DIR))
+                std::string workerPort = worker.address.substr(worker.address.find_first_of(':'));
+                for (const auto &entry : fs::directory_iterator(TEMP_DIRECTORY))
                 {
-                    if (f.path().string().find(worker_port) != std::string::npos)
-                        fs::remove(f);
-                }
-#else
-                auto dir_string = std::string("rm -rf ") + TEMP_DIR + "/*_" + worker_port + ".txt";
-                system(dir_string.c_str());
-#endif
-            }
-            else
-            {
-                for (const auto &worker_location : Master::workers[i].output_reducer_location_map)
-                {
-                    if (!Master::workers[i].dead_handled)
-#if __cplusplus >= 201703L
-
-                        fs::remove(worker_location.first);
-#else
-                        remove(worker_location.first.c_str());
-#endif
+                    if (entry.path().string().find(workerPort) != std::string::npos)
+                    {
+                        fs::remove(entry);
+                    }
                 }
             }
-            Master::workers[i].dead_handled = true;
+            else if (!worker.deadHandled)
+            {
+                for (const auto &outputFile : worker.outputFiles)
+                {
+                    fs::remove(outputFile.first);
+                }
+            }
+            worker.deadHandled = true;
         }
     }
-    if (!Master::server_state)
+    if (!serverState_)
     {
-#if __cplusplus >= 201703L
-        fs::remove_all(TEMP_DIR);
-#else
-        auto dir_string = std::string("rm -rf ") + TEMP_DIR;
-        system(dir_string.c_str());
-#endif
+        fs::remove_all(TEMP_DIRECTORY);
     }
 }
 
-void Master::async_map()
+bool Master::run()
+{
+    std::thread heartbeatThread(&Master::heartbeat, this);
+    fs::create_directory(TEMP_DIRECTORY);
+    if (fs::is_directory(spec_.output_dir))
+    {
+        for (const auto &entry : fs::directory_iterator(spec_.output_dir))
+        {
+            fs::remove(entry.path());
+        }
+    }
+
+    std::thread mapThread(&Master::asyncMap, this);
+    {
+        std::unique_lock<std::mutex> lock(heartbeatMutex_);
+        heartbeatInitialized_ = true;
+        heartbeatCondition_.wait(lock, [this]
+                                 { return !heartbeatInitialized_; });
+    }
+
+    bool shardsCompleted = false;
+    completionCount_ = assignedShards_ = static_cast<int>(fileShards_.size());
+    while (!shardsCompleted)
+    {
+        for (const auto &shard : fileShards_)
+        {
+            int workerIndex;
+            {
+                std::unique_lock<std::mutex> lock(cleanupMutex_);
+                cleanupCondition_.wait(lock, [this]
+                                       { return !findWorkersByStatus(WorkerStatus::FREE).empty(); });
+                workerIndex = findWorkersByStatus(WorkerStatus::FREE)[0];
+                if (workers_[workerIndex].status == WorkerStatus::DEAD)
+                    continue;
+                workers_[workerIndex].currentShard = shard;
+                workers_[workerIndex].status = WorkerStatus::BUSY;
+                assignedShards_--;
+            }
+            auto client = workers_[workerIndex].client.get();
+            std::cout << "Assigning Map Work of shard ID " << shard.shard_id << " to " << workers_[workerIndex].address << std::endl;
+            client->scheduleMapJob(spec_, workers_[workerIndex].currentShard);
+        }
+
+        {
+            std::unique_lock<std::mutex> lock(operationsMutex_);
+            operationsCondition_.wait(lock);
+            if (assignedShards_ <= 0 && operationsCompleted_)
+            {
+                shardsCompleted = true;
+            }
+        }
+
+        {
+            std::unique_lock<std::mutex> lock(cleanupMutex_);
+            if (assignedShards_ > 0 && !missingShards_.empty())
+            {
+                std::cout << "Reassigning work for shard ID " << missingShards_[0].shard_id << std::endl;
+                fileShards_.clear();
+                fileShards_.assign(missingShards_.begin(), missingShards_.end());
+                missingShards_.clear();
+                cleanupCondition_.notify_one();
+            }
+        }
+    }
+    mapThread.join();
+    std::cout << "Map phase completed." << std::endl;
+
+    for (auto &worker : workers_)
+    {
+        if (worker.status == WorkerStatus::DEAD)
+            continue;
+        worker.status = WorkerStatus::FREE;
+        worker.type = WorkerType::REDUCER;
+    }
+    operationsCompleted_ = false;
+
+    std::thread reduceThread(&Master::asyncReduce, this);
+
+    bool partitionsCompleted = false;
+    completionCount_ = assignedPartitions_ = spec_.num_output_files;
+    std::vector<int> outputIndices(assignedPartitions_);
+    std::iota(outputIndices.begin(), outputIndices.end(), 0);
+
+    while (!partitionsCompleted && assignedPartitions_ > 0)
+    {
+        for (auto &outputIndex : outputIndices)
+        {
+            int workerIndex;
+            std::string outputFile;
+            {
+                std::unique_lock<std::mutex> lock(cleanupMutex_);
+                cleanupCondition_.wait(lock, [this]
+                                       { return !findWorkersByStatus(WorkerStatus::FREE).empty(); });
+                workerIndex = findWorkersByStatus(WorkerStatus::FREE)[0];
+                if (workers_[workerIndex].status == WorkerStatus::DEAD)
+                    continue;
+                workers_[workerIndex].type = WorkerType::REDUCER;
+                outputFile = spec_.output_dir + "/output_file_" + std::to_string(outputIndex);
+                workers_[workerIndex].outputFiles[outputFile] = assignFilesToReducer(outputIndex);
+                workers_[workerIndex].currentOutput = outputIndex;
+                workers_[workerIndex].status = WorkerStatus::BUSY;
+                assignedPartitions_--;
+            }
+            cleanupCondition_.notify_one();
+            auto client = workers_[workerIndex].client.get();
+            std::cout << "Assigning Reduce Work " << outputFile << " to " << workers_[workerIndex].address << std::endl;
+            client->scheduleReduceJob(spec_, workers_[workerIndex].outputFiles[outputFile], outputFile);
+        }
+
+        {
+            std::unique_lock<std::mutex> lock(operationsMutex_);
+            operationsCondition_.wait(lock);
+            if (assignedPartitions_ <= 0 && operationsCompleted_)
+            {
+                partitionsCompleted = true;
+            }
+        }
+
+        {
+            std::unique_lock<std::mutex> lock(cleanupMutex_);
+            if (assignedPartitions_ > 0 && !missingOutputs_.empty())
+            {
+                std::cout << "Reassigning work for output file " << missingOutputs_[0] << std::endl;
+                outputIndices.clear();
+                outputIndices.assign(missingOutputs_.begin(), missingOutputs_.end());
+                missingOutputs_.clear();
+                cleanupCondition_.notify_one();
+            }
+        }
+    }
+    reduceThread.join();
+
+    {
+        std::unique_lock<std::mutex> lock(heartbeatMutex_);
+        serverState_ = !SERVER_ALIVE;
+        heartbeatCondition_.notify_all();
+    }
+    heartbeatThread.join();
+    cleanupFiles();
+    return true;
+}
+
+void Master::asyncMap()
 {
     void *tag;
     bool ok = false;
-    while (Master::cq_->Next(&tag, &ok))
+    while (completionQueue_->Next(&tag, &ok))
     {
-        auto call = static_cast<AsyncClientCall *>(tag);
+        auto call = static_cast<AsyncCall *>(tag);
         if (call->status.ok())
         {
-            if (Master::find_worker_by_name(call->worker_ip_addr)->workerStatus != DEAD)
+            if (findWorkerByName(call->workerAddress)->status != WorkerStatus::DEAD)
             {
                 {
-                    std::lock_guard<std::mutex> worker_queue(this->worker_queue_mutex);
-                    for (auto &worker : Master::workers)
+                    std::lock_guard<std::mutex> lock(workerMutex_);
+                    for (auto &worker : workers_)
                     {
-                        if (worker.worker_address == call->worker_ip_addr)
+                        if (worker.address == call->workerAddress)
                         {
-                            std::cout << call->worker_ip_addr << " is now free." << std::endl;
-
-                            worker.workerStatus = FREE;
-                            Master::completion_count--;
-                            std::cout << call->worker_ip_addr << " response received. Completion Count: "
-                                      << Master::completion_count << ", Assigned Work: " << Master::assigned_shards
-                                      << std::endl;
+                            std::cout << call->workerAddress << " is now free." << std::endl;
+                            worker.status = WorkerStatus::FREE;
+                            completionCount_--;
+                            std::cout << call->workerAddress << " response received. Completion Count: " << completionCount_
+                                      << ", Assigned Work: " << assignedShards_ << std::endl;
                             break;
                         }
                     }
-                    condition_worker_queue_mutex.notify_one();
+                    workerCondition_.notify_one();
                 }
-                if (call->is_map_job)
+                if (call->isMapJob)
                 {
-                    auto mcall = dynamic_cast<MapCall *>(call);
-                    for (const auto &m : mcall->result.file_list())
+                    auto mapCall = dynamic_cast<MapCall *>(call);
+                    for (const auto &file : mapCall->result.file_list())
                     {
-                        Master::intermidateFiles.push_back(m);
+                        intermediateFiles_.push_back(file);
                     }
                 }
                 {
-                    std::unique_lock<std::mutex> work_done(ops_mutex);
-                    if (Master::completion_count == 0)
+                    std::unique_lock<std::mutex> lock(operationsMutex_);
+                    if (completionCount_ == 0)
                     {
-                        ops_completed = true;
-                        condition_ops_mutex.notify_one();
+                        operationsCompleted_ = true;
+                        operationsCondition_.notify_one();
                         break;
                     }
                 }
             }
-            condition_cleanup_mutex.notify_one();
+            cleanupCondition_.notify_one();
         }
         delete call;
     }
 }
 
-void Master::async_reducer()
+void Master::asyncReduce()
 {
     void *tag;
     bool ok = false;
-    while (Master::cq_->Next(&tag, &ok))
+    while (completionQueue_->Next(&tag, &ok))
     {
-        auto call = static_cast<AsyncClientCall *>(tag);
+        auto call = static_cast<AsyncCall *>(tag);
         if (call->status.ok())
         {
-            if (Master::find_worker_by_name(call->worker_ip_addr)->workerStatus != DEAD)
+            if (findWorkerByName(call->workerAddress)->status != WorkerStatus::DEAD)
             {
                 {
-                    std::lock_guard<std::mutex> worker_queue(this->worker_queue_mutex);
-                    for (auto &worker : Master::workers)
+                    std::lock_guard<std::mutex> lock(workerMutex_);
+                    for (auto &worker : workers_)
                     {
-                        if (worker.worker_address == call->worker_ip_addr)
+                        if (worker.address == call->workerAddress)
                         {
-                            worker.workerStatus = FREE;
-                            Master::completion_count--;
-                            std::cout << call->worker_ip_addr << " response received. Completion Count: "
-                                      << Master::completion_count << ", Assigned Work: " << Master::assigned_partition
-                                      << std::endl;
+                            worker.status = WorkerStatus::FREE;
+                            completionCount_--;
+                            std::cout << call->workerAddress << " response received. Completion Count: " << completionCount_
+                                      << ", Assigned Work: " << assignedPartitions_ << std::endl;
                             break;
                         }
                     }
-                    condition_worker_queue_mutex.notify_one();
+                    workerCondition_.notify_one();
                 }
-                if (!call->is_map_job)
+                if (!call->isMapJob)
                 {
-                    auto mcall = dynamic_cast<ReduceCall *>(call);
-                    Master::OutputFiles.push_back(mcall->result.file_name());
+                    auto reduceCall = dynamic_cast<ReduceCall *>(call);
+                    outputFiles_.push_back(reduceCall->result.file_name());
                 }
                 {
-                    std::unique_lock<std::mutex> work_done(ops_mutex);
-                    if (Master::completion_count == 0)
+                    std::unique_lock<std::mutex> lock(operationsMutex_);
+                    if (completionCount_ == 0)
                     {
-                        ops_completed = true;
-                        condition_ops_mutex.notify_one();
+                        operationsCompleted_ = true;
+                        operationsCondition_.notify_one();
                         break;
                     }
                 }
             }
-            condition_cleanup_mutex.notify_one();
+            cleanupCondition_.notify_one();
         }
         delete call;
     }
 }
 
-std::vector<std::string> Master::assign_files_to_reducer(int output_id)
+std::vector<std::string> Master::assignFilesToReducer(int outputId)
 {
-    std::set<std::string> file_list;
-    for (int i = 0; i < Master::intermidateFiles.size(); i++)
+    std::set<std::string> fileSet;
+    for (size_t i = 0; i < intermediateFiles_.size(); ++i)
     {
-        auto f = Master::intermidateFiles[i];
-        if (i % Master::mr_spec.num_output_files == output_id)
+        if (i % spec_.num_output_files == outputId)
         {
-            file_list.insert(f);
+            fileSet.insert(intermediateFiles_[i]);
         }
     }
-    std::vector<std::string> convert;
-    convert.assign(file_list.begin(), file_list.end());
-    return convert;
+    return std::vector<std::string>(fileSet.begin(), fileSet.end());
 }
