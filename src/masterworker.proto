@@ -2,10 +2,25 @@ syntax = "proto3";
 
 package masterworker;
 
-service Map_Reduce {
-  rpc map(Map_Request) returns (Map_Response);
-  rpc reduce(Reduce_Request) returns (Reduce_Response);
-  rpc heartbeat(Heartbeat_Payload) returns (Heartbeat_Payload);
+message partition {
+  int32 shard_id = 1;
+  repeated splitFile file_list = 2;
+}
+
+message splitFile {
+  string filename = 1;
+  fixed64 start_offset = 2;
+  fixed64 end_offset = 3;
+}
+
+message Heartbeat_Payload {
+  enum type {
+    ALIVE = 0;
+    DEAD = 1;
+    UNKNOWN = 2;
+  }
+  string id = 1;
+  type status = 3;
 }
 
 message Map_Request {
@@ -28,23 +43,8 @@ message Reduce_Response {
   string file_name = 1;
 }
 
-message Heartbeat_Payload {
-  enum type {
-    ALIVE = 0;
-    DEAD = 1;
-    UNKNOWN = 2;
-  }
-  string id = 1;
-  type status = 3;
-}
-
-message partition {
-  int32 shard_id = 1;
-  repeated splitFile file_list = 2;
-}
-
-message splitFile {
-  string filename = 1;
-  fixed64 start_offset = 2;
-  fixed64 end_offset = 3;
+service Map_Reduce {
+  rpc map(Map_Request) returns (Map_Response);
+  rpc reduce(Reduce_Request) returns (Reduce_Response);
+  rpc heartbeat(Heartbeat_Payload) returns (Heartbeat_Payload);
 }
