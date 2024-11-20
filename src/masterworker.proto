@@ -2,49 +2,76 @@ syntax = "proto3";
 
 package masterworker;
 
+// Represents a partition of data to be processed.
 message partition {
+  // Unique identifier for the shard.
   int32 shard_id = 1;
+  // List of files that are part of this partition.
   repeated splitFile file_list = 2;
 }
 
+// Represents a file split with specific byte offsets.
 message splitFile {
+  // Name of the file.
   string filename = 1;
+  // Starting byte offset for the split.
   fixed64 start_offset = 2;
+  // Ending byte offset for the split.
   fixed64 end_offset = 3;
 }
 
+// Payload for heartbeat messages to check worker status.
 message Heartbeat_Payload {
+  // Enum representing the status of the worker.
   enum type {
-    ALIVE = 0;
-    DEAD = 1;
-    UNKNOWN = 2;
+    ALIVE = 0;   // Worker is alive and functioning.
+    DEAD = 1;    // Worker is not responding.
+    UNKNOWN = 2; // Worker status is unknown.
   }
+  // Unique identifier for the worker.
   string id = 1;
+  // Current status of the worker.
   type status = 3;
 }
 
+// Request message for initiating a map operation.
 message Map_Request {
+  // Unique identifier for the map operation.
   string uuid = 1;
+  // Number of partitions to be processed.
   int32 partition_count = 2;
+  // List of partitions to be processed.
   repeated partition shard = 3;
 }
 
+// Response message for a map operation.
 message Map_Response {
+  // List of files generated as a result of the map operation.
   repeated string file_list = 1;
 }
 
+// Request message for initiating a reduce operation.
 message Reduce_Request {
+  // Unique identifier for the reduce operation.
   string uuid = 1;
+  // Name of the output file to be generated.
   string output_file = 2;
+  // List of files to be reduced.
   repeated string file_list = 4;
 }
 
+// Response message for a reduce operation.
 message Reduce_Response {
+  // Name of the file generated as a result of the reduce operation.
   string file_name = 1;
 }
 
+// Service definition for MapReduce operations.
 service Map_Reduce {
+  // RPC for performing a map operation.
   rpc map(Map_Request) returns (Map_Response);
+  // RPC for performing a reduce operation.
   rpc reduce(Reduce_Request) returns (Reduce_Response);
+  // RPC for sending and receiving heartbeat messages.
   rpc heartbeat(Heartbeat_Payload) returns (Heartbeat_Payload);
 }

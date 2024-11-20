@@ -11,21 +11,21 @@
 #define TEMP_DIR "intermediate"
 
 /**
- * @brief Represents a shard of files, containing multiple file segments.
- */
-struct FileShard
-{
-    int shard_id = -1;                 ///< The ID of the shard.
-    std::vector<FileSegment> segments; ///< List of file segments in the shard.
-};
-
-/**
  * @brief Represents a portion of a file with specific offsets.
  */
 struct FileSegment
 {
     std::string filename;                              ///< The name of the file.
     std::pair<std::uintmax_t, std::uintmax_t> offsets; ///< The start and end offsets of the segment.
+};
+
+/**
+ * @brief Represents a shard of files, containing multiple file segments.
+ */
+struct FileShard
+{
+    int shard_id = -1;                 ///< The ID of the shard.
+    std::vector<FileSegment> segments; ///< List of file segments in the shard.
 };
 
 /**
@@ -58,6 +58,25 @@ inline std::uintmax_t approximateSplitSize(
     return optimal_shard_size + line.length() + 1;
 }
 
+/**
+ * @brief Get the size of a file.
+ *
+ * This function retrieves the size of a file given its path.
+ *
+ * @param file_path The path to the file.
+ * @return The size of the file in bytes, or -1 if an error occurs.
+ */
+inline std::uintmax_t getFileSize(const std::string &file_path)
+{
+    struct stat stat_buf;
+    int rc = stat(file_path.c_str(), &stat_buf);
+    if (rc != 0)
+    {
+        std::cerr << "Error: Unable to get file size for " << file_path << std::endl;
+        return -1;
+    }
+    return stat_buf.st_size;
+}
 /**
  * @brief Splits files into shards based on the MapReduce specification.
  *
@@ -135,24 +154,4 @@ inline bool shard_files(const MapReduceSpec &mr_spec, std::vector<FileShard> &fi
         file_shards.push_back(current_shard);
     }
     return true;
-}
-
-/**
- * @brief Get the size of a file.
- *
- * This function retrieves the size of a file given its path.
- *
- * @param file_path The path to the file.
- * @return The size of the file in bytes, or -1 if an error occurs.
- */
-inline std::uintmax_t getFileSize(const std::string &file_path)
-{
-    struct stat stat_buf;
-    int rc = stat(file_path.c_str(), &stat_buf);
-    if (rc != 0)
-    {
-        std::cerr << "Error: Unable to get file size for " << file_path << std::endl;
-        return -1;
-    }
-    return stat_buf.st_size;
 }
