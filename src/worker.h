@@ -35,7 +35,6 @@ public:
           worker_address_(worker_address),
           status_(CallStatus::CREATE)
     {
-        Proceed();
     }
 
     virtual ~BaseHandler() = default;
@@ -278,180 +277,259 @@ private:
     /**
      * @brief Handler function for heartbeat messages.
      */
-    void HeartbeatHandler();
+    void HandleHeartbeat();
 };
 
-// Implementation of Worker methods
+/**
+ * @brief Constructs a Worker instance.
+ *
+ * This constructor initializes a Worker object, setting up the gRPC server
+ * to listen on the specified IP address and port. It also prepares the
+ * necessary completion queues for handling work and heartbeat messages.
+ *
+ * @param ip_address_port The IP address and port to listen on (e.g., "localhost:50051").
+ */
 Worker::Worker(const std::string &ip_address_port)
-    : worker_uuid_(ip_address_port.substr(ip_address_port.find_first_of(':') + 1))
+    : worker_uuid_(ip_address_port.substr(ip_address_port.find_first_of(':') + 1)) // Extracts the port as a unique identifier
 {
-    std::cout << "[Worker] listening on " << ip_address_port << std::endl;
+    // Log the initialization of the worker with the specified address
+    std::cout << "[INFO] Worker initialized and listening on: " << ip_address_port << std::endl;
+
+    // Configure the server to listen on the provided address with insecure credentials
     builder_.AddListeningPort(ip_address_port, grpc::InsecureServerCredentials());
+
+    // Register the gRPC service to handle incoming requests
     builder_.RegisterService(&service_);
+
+    // Create completion queues for handling work and heartbeat operations
     work_queue_ = builder_.AddCompletionQueue();
     heartbeat_queue_ = builder_.AddCompletionQueue();
 }
 
+/**
+ * @brief Destructor for the Worker class.
+ *
+ * This destructor ensures a clean shutdown of the Worker by stopping the server
+ * and shutting down the completion queues. It also waits for the heartbeat thread
+ * to finish if it is still running.
+ */
 Worker::~Worker()
 {
+    // Indicate that a clean exit is requested
     clean_exit_ = true;
+
+    // Shutdown the gRPC server to stop accepting new requests
     server_->Shutdown();
 
-    // Shutdown the completion queues
+    // Shutdown the completion queues to stop processing further operations
     work_queue_->Shutdown();
     heartbeat_queue_->Shutdown();
 
+    // Wait for the heartbeat thread to complete if it is joinable
     if (heartbeat_thread_.joinable())
     {
         heartbeat_thread_.join();
     }
 }
 
+/**
+ * @brief Runs the Worker server.
+ *
+ * This function initializes and starts the gRPC server, setting up the necessary
+ * handlers for processing Map and Reduce requests. It also manages the heartbeat
+ * handler thread to monitor worker status. The function enters a main processing
+ * loop to handle incoming requests until the server is shut down.
+ *
+ * @return True if the server starts and runs successfully, false otherwise.
+ */
 bool Worker::run()
 {
+    // Attempt to build and start the gRPC server
     server_ = builder_.BuildAndStart();
     if (!server_)
     {
-        std::cerr << "Failed to start the server." << std::endl;
+        std::cerr << "[ERROR] Failed to start the gRPC server." << std::endl;
         return false;
     }
+    std::cout << "[INFO] gRPC server started successfully." << std::endl;
 
-    // Start the heartbeat handler thread
-    heartbeat_thread_ = std::thread(&Worker::HeartbeatHandler, this);
+    // Launch the heartbeat handler thread to manage heartbeat messages
+    heartbeat_thread_ = std::thread(&Worker::HandleHeartbeat, this);
+    std::cout << "[INFO] Heartbeat handler thread started." << std::endl;
 
-    // Create new handlers for Map and Reduce requests
+    // Instantiate handlers for Map and Reduce requests
     new MapperHandler(&service_, work_queue_.get(), worker_uuid_);
     new ReducerHandler(&service_, work_queue_.get(), worker_uuid_);
+    std::cout << "[INFO] Map and Reduce handlers initialized." << std::endl;
 
-    void *tag; // uniquely identifies a request.
-    bool ok;
+    void *tag; // Pointer to uniquely identify a request
+    bool ok;   // Status flag for request processing
 
-    // Main processing loop.
+    // Main processing loop to handle incoming requests
     while (true)
     {
+        // Wait for the next request from the completion queue
         if (!work_queue_->Next(&tag, &ok))
         {
-            break; // The completion queue is shutting down.
+            std::cout << "[INFO] Completion queue is shutting down." << std::endl;
+            break; // Exit loop if the queue is shutting down
         }
 
         if (ok)
         {
+            // Proceed with the request if it was processed successfully
             static_cast<BaseHandler *>(tag)->Proceed();
         }
         else
         {
-            // Handle error
-            std::cerr << "Error processing request." << std::endl;
+            // Log an error if the request processing failed
+            std::cerr << "[ERROR] Error processing request." << std::endl;
         }
     }
 
+    // Ensure the heartbeat thread is joined before exiting
     if (heartbeat_thread_.joinable())
     {
         heartbeat_thread_.join();
+        std::cout << "[INFO] Heartbeat handler thread joined." << std::endl;
     }
     return true;
 }
 
-void Worker::HeartbeatHandler()
+/**
+ * @brief Handles incoming heartbeat requests from the gRPC server.
+ *
+ * This function continuously listens for heartbeat requests from the completion queue
+ * and processes them. It ensures that the worker is alive and responsive by handling
+ * each heartbeat request appropriately. The function runs in a loop until a clean exit
+ * is requested, at which point it stops processing further requests.
+ */
+void Worker::HandleHeartbeat()
 {
-    new HeartbeatHandler(&service_, heartbeat_queue_.get(), worker_uuid_);
+    // Create a unique pointer for the HeartbeatHandler to manage heartbeat requests
+    std::unique_ptr<HeartbeatHandler> handler = std::make_unique<HeartbeatHandler>(&service_, heartbeat_queue_.get(), worker_uuid_);
 
-    void *tag;
-    bool ok;
+    void *tag; // Pointer to uniquely identify a request
+    bool ok;   // Status flag indicating if the request was processed successfully
 
-    while (true)
+    // Continuously process heartbeat requests until a clean exit is requested
+    while (!clean_exit_)
     {
-        if (clean_exit_)
-        {
-            return;
-        }
-
+        // Wait for the next heartbeat request from the completion queue
         if (!heartbeat_queue_->Next(&tag, &ok))
         {
-            break; // The completion queue is shutting down.
+            std::cout << "[INFO] Heartbeat completion queue is shutting down." << std::endl;
+            break; // Exit loop if the queue is shutting down
         }
 
         if (ok)
         {
+            // Proceed with the request if it was processed successfully
             static_cast<BaseHandler *>(tag)->Proceed();
         }
         else
         {
-            // Handle error
-            std::cerr << "Error processing heartbeat request." << std::endl;
+            // Log an error if the request processing failed
+            std::cerr << "[ERROR] Failed to process heartbeat request." << std::endl;
         }
     }
 }
 
-// Static helper methods
+/**
+ * @brief Static helper method to retrieve the internal implementation of a BaseReducer.
+ *
+ * This function provides access to the internal implementation of a BaseReducer object.
+ *
+ * @param reducer Pointer to the BaseReducer object.
+ * @return Pointer to the internal implementation of the BaseReducer.
+ */
 BaseReducerInternal *Worker::GetBaseReducerInternal(BaseReducer *reducer)
 {
     return reducer->impl_;
 }
 
+/**
+ * @brief Static helper method to retrieve the internal implementation of a BaseMapper.
+ *
+ * This function provides access to the internal implementation of a BaseMapper object.
+ *
+ * @param mapper Pointer to the BaseMapper object.
+ * @return Pointer to the internal implementation of the BaseMapper.
+ */
 BaseMapperInternal *Worker::GetBaseMapperInternal(BaseMapper *mapper)
 {
     return mapper->impl_;
 }
 
-// Implementation of MapperHandler methods
+/**
+ * @brief Handles a Map request by processing file shards and generating intermediate files.
+ *
+ * This function processes a Map request by retrieving the user-defined mapper function,
+ * converting gRPC partitions to file shards, and processing each file segment. It generates
+ * intermediate files and adds them to the response.
+ *
+ * @param request The Map request containing file shards and partition information.
+ * @return The Map response containing the list of intermediate files.
+ */
 masterworker::Map_Response MapperHandler::HandleMapRequest(const masterworker::Map_Request &request)
 {
     masterworker::Map_Response response;
 
-    // Get the user-defined mapper function from the task factory.
+    // Retrieve the user-defined mapper function from the task factory using the UUID.
     auto user_mapper = get_mapper_from_task_factory(request.uuid());
     if (!user_mapper)
     {
-        std::cerr << "Error: Mapper function not found for UUID: " << request.uuid() << std::endl;
+        std::cerr << "[ERROR] Mapper function not found for UUID: " << request.uuid() << std::endl;
         return response;
     }
 
-    // Get the internal implementation of BaseMapper
+    // Retrieve the internal implementation of BaseMapper.
     auto base_mapper_internal = Worker::GetBaseMapperInternal(user_mapper.get());
     if (!base_mapper_internal)
     {
-        std::cerr << "Error: BaseMapperInternal is null." << std::endl;
+        std::cerr << "[ERROR] BaseMapperInternal is null." << std::endl;
         return response;
     }
 
-    // Prepare intermediate file list
+    // Prepare a list of intermediate files based on the partition count.
     int partition_count = request.partition_count();
-    base_mapper_internal->intermediate_file_list.reserve(partition_count);
+    base_mapper_internal->intermediate_files.reserve(partition_count);
     for (int i = 0; i < partition_count; ++i)
     {
         std::string intermediate_file = std::string(TEMP_DIR) + "/" +
                                         std::to_string(i) + "_" +
                                         worker_address_ + ".txt";
-        base_mapper_internal->intermediate_file_list.push_back(intermediate_file);
+        base_mapper_internal->intermediate_files.push_back(intermediate_file);
     }
 
-    // Process each shard in the request
+    // Process each shard in the request.
     for (int shard_index = 0; shard_index < request.shard_size(); ++shard_index)
     {
-        // Convert gRPC partition to FileShard
+        // Convert gRPC partition to FileShard.
         FileShard file_shard = ConvertGrpcPartitionToFileShard(request.shard(shard_index));
 
-        // Process each file segment in the shard
+        // Process each file segment in the shard.
         for (const auto &segment : file_shard.segments)
         {
             std::ifstream file_stream(segment.filename, std::ios::binary);
             if (!file_stream)
             {
-                std::cerr << "Error opening file: " << segment.filename << std::endl;
-                continue; // Skip this segment
+                std::cerr << "[ERROR] Unable to open file: " << segment.filename << std::endl;
+                continue; // Skip this segment if the file cannot be opened.
             }
 
+            // Read the file segment into a buffer.
             file_stream.seekg(segment.offsets.first);
             std::string buffer(segment.offsets.second - segment.offsets.first, '\0');
             file_stream.read(&buffer[0], segment.offsets.second - segment.offsets.first);
 
             if (!file_stream)
             {
-                std::cerr << "Error reading file segment from: " << segment.filename << std::endl;
-                continue; // Skip this segment
+                std::cerr << "[ERROR] Failed to read file segment from: " << segment.filename << std::endl;
+                continue; // Skip this segment if reading fails.
             }
 
+            // Process each line in the buffer using the user-defined mapper function.
             std::stringstream stream(buffer);
             std::string line;
             while (std::getline(stream, line))
@@ -461,11 +539,11 @@ masterworker::Map_Response MapperHandler::HandleMapRequest(const masterworker::M
         }
     }
 
-    // Final flush of the mapper
+    // Perform a final flush of the mapper to ensure all data is processed.
     base_mapper_internal->final_flush();
 
-    // Add intermediate files to the response
-    for (const auto &file : base_mapper_internal->intermediate_file_list)
+    // Add the list of intermediate files to the response.
+    for (const auto &file : base_mapper_internal->intermediate_files)
     {
         response.add_file_list(file);
     }
@@ -473,65 +551,89 @@ masterworker::Map_Response MapperHandler::HandleMapRequest(const masterworker::M
     return response;
 }
 
+/**
+ * @brief Converts a gRPC partition to a FileShard.
+ *
+ * This function takes a gRPC partition object and converts it into a FileShard
+ * structure, which contains a list of file segments with their respective filenames
+ * and byte offsets.
+ *
+ * @param partition The gRPC partition object containing file segment information.
+ * @return A FileShard object populated with the file segments from the partition.
+ */
 FileShard MapperHandler::ConvertGrpcPartitionToFileShard(const masterworker::partition &partition)
 {
     FileShard shard;
-    shard.shard_id = partition.shard_id();
+    shard.shard_id = partition.shard_id(); // Set the shard ID from the partition
+
+    // Iterate over each file segment in the partition's file list
     for (const auto &file_segment : partition.file_list())
     {
         FileSegment segment;
-        segment.filename = file_segment.filename();
-        segment.offsets = {file_segment.start_offset(), file_segment.end_offset()};
-        shard.segments.push_back(segment);
+        segment.filename = file_segment.filename();                                 // Set the filename for the segment
+        segment.offsets = {file_segment.start_offset(), file_segment.end_offset()}; // Set the start and end offsets
+        shard.segments.push_back(segment);                                          // Add the segment to the shard's list of segments
     }
-    return shard;
+
+    return shard; // Return the constructed FileShard
 }
 
-// Implementation of ReducerHandler methods
+/**
+ * @brief Handles a Reduce request by processing intermediate files and applying the user-defined reducer function.
+ *
+ * This function reads intermediate files specified in the request, extracts key-value pairs,
+ * and applies the user-defined reducer function to each key. The results are written to the output file
+ * specified in the request.
+ *
+ * @param request The Reduce request containing the list of intermediate files and output file name.
+ * @return A Reduce_Response object containing the name of the output file.
+ */
 masterworker::Reduce_Response ReducerHandler::HandleReduceRequest(const masterworker::Reduce_Request &request)
 {
     masterworker::Reduce_Response response;
     response.set_file_name(request.output_file());
 
-    // Get the user-defined reducer function from the task factory.
+    // Retrieve the user-defined reducer function using the UUID from the request.
     auto user_reducer = get_reducer_from_task_factory(request.uuid());
     if (!user_reducer)
     {
-        std::cerr << "Error: Reducer function not found for UUID: " << request.uuid() << std::endl;
+        std::cerr << "[ERROR] Reducer function not found for UUID: " << request.uuid() << std::endl;
         return response;
     }
 
-    // Get the internal implementation of BaseReducer
+    // Obtain the internal implementation of BaseReducer.
     auto base_reducer_internal = Worker::GetBaseReducerInternal(user_reducer.get());
     if (!base_reducer_internal)
     {
-        std::cerr << "Error: BaseReducerInternal is null." << std::endl;
+        std::cerr << "[ERROR] BaseReducerInternal is null." << std::endl;
         return response;
     }
 
-    base_reducer_internal->file_name = request.output_file();
+    // Set the output file for the reducer.
+    base_reducer_internal->output_file = request.output_file();
 
-    // Map to store key-value pairs
+    // Map to store key-value pairs extracted from intermediate files.
     std::map<std::string, std::vector<std::string>> key_value_map;
 
-    // Read intermediate files
+    // Iterate over each intermediate file specified in the request.
     for (const auto &file_name : request.file_list())
     {
         std::ifstream file_stream(file_name);
         if (!file_stream)
         {
-            std::cerr << "Error opening intermediate file: " << file_name << std::endl;
-            continue; // Skip this file
+            std::cerr << "[ERROR] Unable to open intermediate file: " << file_name << std::endl;
+            continue; // Skip this file if it cannot be opened.
         }
 
         std::string line;
+        // Read each line from the file and extract key-value pairs.
         while (std::getline(file_stream, line))
         {
             size_t delimiter_pos = line.find_first_of(DELIMITER);
             if (delimiter_pos == std::string::npos)
             {
-                std::cerr << "Warning: Invalid line format in file " << file_name << ": " << line << std::endl;
-                continue; // Skip this line
+                std::cerr << "[WARNING] Invalid line format in file " << file_name << ": " << line << std::endl;
+                continue; // Skip lines that do not contain a valid delimiter.
             }
             std::string key = line.substr(0, delimiter_pos);
             std::string value = line.substr(delimiter_pos + 1);
@@ -539,20 +641,37 @@ masterworker::Reduce_Response ReducerHandler::HandleReduceRequest(const masterwo
         }
     }
 
-    // Call the reduce function for each key
+    // Apply the reduce function to each key in the map.
     for (const auto &kv : key_value_map)
     {
         user_reducer->reduce(kv.first, kv.second);
     }
-    key_value_map.clear();
-    return response;
+    key_value_map.clear(); // Clear the map after processing.
+
+    return response; // Return the response containing the output file name.
 }
 
-// Implementation of HeartbeatHandler methods
+/**
+ * @brief Handles a heartbeat request from a worker and generates a response.
+ *
+ * This method processes an incoming heartbeat request by extracting the worker's
+ * unique identifier and setting the status to ALIVE in the response. The response
+ * is then returned to acknowledge the worker's active status.
+ *
+ * @param request The incoming heartbeat request containing the worker's ID.
+ * @return A Heartbeat_Payload response with the worker's ID and status set to ALIVE.
+ */
 masterworker::Heartbeat_Payload HeartbeatHandler::HandleHeartbeatRequest(const masterworker::Heartbeat_Payload &request)
 {
+    // Create a response object to send back to the worker
     masterworker::Heartbeat_Payload response;
+
+    // Set the worker's ID in the response to match the incoming request
     response.set_id(request.id());
+
+    // Set the worker's status to ALIVE to indicate the worker is active
     response.set_status(masterworker::Heartbeat_Payload_type_ALIVE);
+
+    // Return the response to the worker
     return response;
 }
