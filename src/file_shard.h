@@ -11,7 +11,7 @@
 #define TEMP_DIR "intermediate"
 
 /**
- * @brief Represents a portion of a file with specific offsets.
+ * @brief Represent a portion of a file with specific offsets.
  */
 struct FileSegment
 {
@@ -20,7 +20,7 @@ struct FileSegment
 };
 
 /**
- * @brief Represents a shard of files, containing multiple file segments.
+ * @brief Represent a shard of files, containing multiple file segments.
  */
 struct FileShard
 {
@@ -29,9 +29,9 @@ struct FileShard
 };
 
 /**
- * @brief Approximates the size of a file split based on the optimal shard size.
+ * @brief Approximate the size of a file split based on the optimal shard size.
  *
- * This function calculates an approximate size for a file split by reading
+ * This function calculate an approximate size for a file split by reading
  * from the file starting at a given offset and extending to the next newline.
  *
  * @param file_name The name of the file.
@@ -61,7 +61,7 @@ inline std::uintmax_t approximateSplitSize(
 /**
  * @brief Get the size of a file.
  *
- * This function retrieves the size of a file given its path.
+ * This function retrieve the size of a file given its path.
  *
  * @param file_path The path to the file.
  * @return The size of the file in bytes, or -1 if an error occurs.
@@ -78,9 +78,9 @@ inline std::uintmax_t getFileSize(const std::string &file_path)
     return stat_buf.st_size;
 }
 /**
- * @brief Splits files into shards based on the MapReduce specification.
+ * @brief Split files into shards based on the MapReduce specification.
  *
- * This function divides input files into shards, each containing multiple file segments.
+ * This function divide input files into shards, each containing multiple file segments.
  * The size of each shard is determined by the map_size_kb parameter in the MapReduce specification.
  *
  * @param mr_spec The MapReduce specification containing input files and shard size.
@@ -112,7 +112,7 @@ inline bool shard_files(const MapReduceSpec &mr_spec, std::vector<FileShard> &fi
             current_segment.filename = file;
             if (remaining_shard_size >= remaining_file_size)
             {
-                // If the remaining shard size can accommodate the remaining file size
+                // If the remaining shard size can accomodate the remaining file size
                 current_segment.offsets = {offset, offset + remaining_file_size};
                 remaining_shard_size -= remaining_file_size;
                 remaining_file_size = 0;

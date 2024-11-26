@@ -6,7 +6,7 @@
 #include "mr_tasks.h"
 #include <mr_task_factory.h>
 
-// Constructor for BaseMapper, initializes the internal implementation.
+// Constructor for BaseMapper, it initializes the internal implementation.
 BaseMapper::BaseMapper() : impl_(new BaseMapperInternal) {}
 
 // Destructor for BaseMapper.
@@ -18,7 +18,7 @@ void BaseMapper::emit(const std::string &key, const std::string &val)
 	impl_->emit(key, val);
 }
 
-// Constructor for BaseReducer, initializes the internal implementation.
+// Constructor for BaseReducer, it initializes the internal implementation.
 BaseReducer::BaseReducer() : impl_(new BaseReducerInternal) {}
 
 // Destructor for BaseReducer.
@@ -65,7 +65,7 @@ namespace
 		std::unordered_map<std::string, std::function<std::shared_ptr<BaseReducer>()>> reducers_;
 
 	private:
-		// Private constructor to enforce singleton pattern.
+		// Private constructor to enforce the singleton pattern.
 		TaskFactory();
 	};
 

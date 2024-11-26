@@ -1,6 +1,6 @@
-# CMake configuration for generating Protocol Buffers and gRPC files
+# CMake configuration for generate Protocol Buffers and gRPC files
 
-# Specify the minimum version of CMake required
+# Specify the minimum version of CMake require
 cmake_minimum_required(VERSION 3.10)
 
 # Define the project name
@@ -17,12 +17,12 @@ endif()
 # Locate the gRPC plugin for protoc
 find_program(GRPC_PLUGIN NAMES "grpc_cpp_plugin")
 if (NOT EXISTS ${GRPC_PLUGIN})
-  message(WARNING "Warning: gRPC plugin 'grpc_cpp_plugin' not found. gRPC classes will not be generated.")
+  message(WARNING "Warning: gRPC plugin 'grpc_cpp_plugin' not found. gRPC classes will not be generate.")
 else()
   message(STATUS "gRPC plugin 'grpc_cpp_plugin' found: ${GRPC_PLUGIN}")
 endif()
 
-# Set the default search path for .proto files if not already defined
+# Set the default search path for .proto files if not already define
 if (NOT DEFINED PROTO_SEARCH_PATH)
   set(PROTO_SEARCH_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
@@ -32,7 +32,7 @@ set(PROTOC_FLAGS)
 list(APPEND PROTOC_FLAGS "--proto_path=${PROTO_SEARCH_PATH}")
 list(APPEND PROTOC_FLAGS "--cpp_out=${CMAKE_CURRENT_BINARY_DIR}")
 
-# Add gRPC plugin flags if the plugin exists
+# Add gRPC plugin flags if the plugin exist
 if (EXISTS ${GRPC_PLUGIN})
   list(APPEND PROTOC_FLAGS "--plugin=protoc-gen-grpc=${GRPC_PLUGIN}")
   list(APPEND PROTOC_FLAGS "--grpc_out=${CMAKE_CURRENT_BINARY_DIR}")
@@ -64,7 +64,7 @@ foreach(FNAME ${proto_files})
   # Install the generated protobuf header
   install(FILES ${GENERATED_PROTO_PATH}.pb.h DESTINATION include/${PROTO_PATH})
 
-  # Append generated header and source files for gRPC if the plugin exists
+  # Append generated header and source files for gRPC if the plugin exist
   if (EXISTS ${GRPC_PLUGIN})
     list(APPEND ProtoHeaders "${GENERATED_PROTO_PATH}.grpc.pb.h")
     list(APPEND ProtoSources "${GENERATED_PROTO_PATH}.grpc.pb.cc")

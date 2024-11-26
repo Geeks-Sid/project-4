@@ -10,9 +10,9 @@
 namespace fs = std::filesystem;
 
 /**
- * @brief Represents the configuration specifications for a MapReduce job.
+ * @brief Represent the configuration specifications for a MapReduce job.
  *
- * This structure holds various parameters required to configure and execute
+ * This structure hold various parameters required to configure and execute
  * a MapReduce job, including the number of workers, output files, and input files.
  */
 struct MapReduceSpec
@@ -26,7 +26,7 @@ struct MapReduceSpec
     std::vector<std::string> input_file_paths; ///< Paths to input files
 
     /**
-     * @brief Prints the current configuration for debugging purposes.
+     * @brief Print the current configuration for debugging purposes.
      */
     void print_config() const
     {
@@ -52,10 +52,10 @@ struct MapReduceSpec
 };
 
 /**
- * @brief Splits a given string into a vector of substrings based on a specified delimiter.
+ * @brief Split a given string into a vector of substrings based on a specified delimiter.
  *
- * This function logs the splitting process and warns if any empty segments are encountered.
- * It also logs an error if no segments are found after splitting.
+ * This function log the splitting process and warns if any empty segments are encountered.
+ * It also log an error if no segments are found after splitting.
  *
  * @param input The string to be split.
  * @param delimiter The character used to split the string.
@@ -90,10 +90,10 @@ inline std::vector<std::string> split_string(const std::string &input, char deli
 }
 
 /**
- * @brief Reads and parses a MapReduce configuration file to populate a MapReduceSpec object.
+ * @brief Read and parses a MapReduce configuration file to populate a MapReduceSpec object.
  *
- * This function opens the specified configuration file and reads it line by line.
- * Each line is expected to be in the format "key=value". The function populates the
+ * This function open the specified configuration file and reads it line by line.
+ * Each line is expected to be in the format "key=value". The function populate the
  * MapReduceSpec object based on recognized keys. It logs errors for invalid lines,
  * unknown keys, and invalid or out-of-range values.
  *
@@ -182,10 +182,10 @@ inline bool read_mr_spec_from_config_file(const std::string &config_filename, Ma
 }
 
 /**
- * @brief Validates the MapReduce specification.
+ * @brief Validate the MapReduce specification.
  *
- * This function checks the consistency and validity of the MapReduceSpec object.
- * It ensures that the number of worker endpoints matches the worker count and
+ * This function check the consistency and validity of the MapReduceSpec object.
+ * It ensure that the number of worker endpoints matches the worker count and
  * verifies that all input files are accessible.
  *
  * @param mr_spec The MapReduceSpec object containing configuration details.

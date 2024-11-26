@@ -18,7 +18,7 @@
 
 /**
  * @class BaseMapperInternal
- * @brief Handles the internal operations of a mapper, including emitting key-value pairs and managing intermediate files.
+ * @brief Handle the internal operations of a mapper, including emitting key-value pairs and managing intermediate files.
  */
 struct BaseMapperInternal
 {
@@ -26,7 +26,7 @@ struct BaseMapperInternal
     void emit(const std::string &key, const std::string &val);
     void final_flush();
 
-    // Stores key-value pairs with their corresponding file paths
+    // Store key-value pairs with their corresponding file paths
     std::vector<std::pair<std::string, std::pair<std::string, std::string>>> kv_pairs;
     // List of intermediate files for storing key-value pairs
     std::vector<std::string> intermediate_files;
@@ -42,7 +42,7 @@ inline BaseMapperInternal::BaseMapperInternal()
 }
 
 /**
- * @brief Maps a key to a specific intermediate file based on a hash function.
+ * @brief Map a key to a specific intermediate file based on a hash function.
  * @param key The key to be mapped.
  * @return The file path to which the key is mapped.
  */
@@ -60,7 +60,7 @@ inline std::string BaseMapperInternal::map_key_to_file(const std::string &key)
 }
 
 /**
- * @brief Emits a key-value pair, storing it in memory until the maximum size is reached, then flushes to file.
+ * @brief Emit a key-value pair, storing it in memory until the maximum size is reached, then flushes to file.
  * @param key The key to be emitted.
  * @param val The value to be emitted.
  */
@@ -86,7 +86,7 @@ inline void BaseMapperInternal::emit(const std::string &key, const std::string &
 }
 
 /**
- * @brief Flushes all remaining key-value pairs to their respective files.
+ * @brief Flush all remaining key-value pairs to their respective files.
  */
 inline void BaseMapperInternal::final_flush()
 {
@@ -107,7 +107,7 @@ inline void BaseMapperInternal::final_flush()
 
 /**
  * @class BaseReducerInternal
- * @brief Handles the internal operations of a reducer, including emitting key-value pairs to an output file.
+ * @brief Handle the internal operations of a reducer, including emitting key-value pairs to an output file.
  */
 struct BaseReducerInternal
 {
@@ -125,7 +125,7 @@ inline BaseReducerInternal::BaseReducerInternal()
 }
 
 /**
- * @brief Emits a key-value pair to the output file.
+ * @brief Emit a key-value pair to the output file.
  * @param key The key to be emitted.
  * @param val The value to be emitted.
  */

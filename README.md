@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project implements a simplified version of the MapReduce infrastructure, a programming model designed for processing and generating large data sets. The core of this project is to simulate the MapReduce framework, which involves dividing tasks into smaller sub-tasks (map tasks) and then aggregating the results (reduce tasks). The project is designed to run on a single machine, simulating a distributed environment by using multiple processes.
+This project implement a simplified version of the MapReduce infrastructure, a programming model designed for processing and generating large data sets. The core of this project is to simulate the MapReduce framework, which involves dividing tasks into smaller sub-tasks (map tasks) and then aggregating the results (reduce tasks). The project is designed to run on a single machine, simulating a distributed environment by using multiple process.
 
 ## Key Components
 
@@ -66,4 +66,4 @@ Several complexities were addressed in this project to ensure a robust and effic
 6. **Cleanup**:
    - Ensure that all intermediate files are deleted after the process to prevent test failures.
 
-This project demonstrates a robust implementation of the MapReduce framework, focusing on reliability and efficiency through the use of a heartbeat mechanism and effective task management.
+This project demonstrate a robust implementation of the MapReduce framework, focusing on reliability and efficiency through the use of a heartbeat mechanism and effective task management.

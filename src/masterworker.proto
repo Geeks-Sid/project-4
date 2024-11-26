@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package masterworker;
 
-// Represents a partition of data to be processed.
+// Represent a partition of data to be process.
 message partition {
   // Unique identifier for the shard.
   int32 shard_id = 1;
@@ -10,7 +10,7 @@ message partition {
   repeated splitFile file_list = 2;
 }
 
-// Represents a file split with specific byte offsets.
+// Represent a file split with specific byte offsets.
 message splitFile {
   // Name of the file.
   string filename = 1;
